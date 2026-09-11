@@ -1,3 +1,2 @@
-opencv-python
-pillow
-numpy
+# Runtime environment. Install with: python -m pip install -r requirements.txt
+-e .

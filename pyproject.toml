@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gst-image"
+version = "0.1.0"
+description = "Traceable weld microstructure segmentation and measurement"
+readme = "README.md"
+requires-python = ">=3.12,<3.15"
+dependencies = [
+    "matplotlib>=3.9",
+    "numpy>=2.0",
+    "opencv-python>=4.10,<5",
+    "pandas>=2.2",
+    "Pillow>=10.4",
+    "pydantic>=2.9,<3",
+    "PySide6>=6.8,<7",
+    "scikit-image>=0.24,<0.27",
+    "scikit-learn>=1.5,<2",
+    "scipy>=1.14",
+    "tifffile>=2024.8",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-cov>=5",
+    "pytest-qt>=4.4",
+    "ruff>=0.8",
+]
+
+[project.scripts]
+gst-image = "gst_image_app.main:main"
+gst-image-cli = "gst_image.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src", "app"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]
+markers = ["large: opt-in tests using full-resolution sample micrographs"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+ignore = ["BLE001"]
