@@ -12,3 +12,4 @@ dist/
 *.gstproj/
 *.gstproj
 test-output/
+pytest-cache*/
