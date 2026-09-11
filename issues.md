@@ -11,4 +11,8 @@
 - [x] Added threshold post-processing controls for morphological closing and border-seeded flood filling of enclosed holes. https://medium.com/python-other/hole-filling-of-opencv-binary-image-use-floodfill-eb9464023b20
 - [x] Added an ImageJ/MorphoLibJ-inspired morphological watershed segmentation method with object/border inputs, morphological/internal/external gradients, extended-minima tolerance, 4/8 connectivity, and optional dams. https://imagej.net/plugins/morphological-segmentation
 - [x] Replaced the one-sided manual threshold with an inclusive lower/upper intensity range, including eyedropper targets and legacy project/recipe migration.
-- [ ] Class seed mask brush
+- [x] Fixed class-seed placement in selected-ROI views by anchoring its scaled training mask to full-source coordinates; added a source-pixel brush outline for visual alignment.
+- [x] Added `[` and `]` shortcuts to decrease and increase the class-seed, mask-brush, and mask-eraser radius.
+- [x] Made mask-brush and mask-eraser operation visible with a high-contrast source-pixel cursor outline, immediate paint overlays, and actionable guidance when no editable result layer is selected.
+- [x] Added a Seed eraser tool; erase strokes are saved and replayed with the other class-training strokes.
+- [x] Replaced the raw 4.5 MP worker traceback with a preflight warning that reports the current size, recommends a safe Overview resolution, and links the workflow from `docs/region-classification.md`.

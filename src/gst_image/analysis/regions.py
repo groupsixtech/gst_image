@@ -14,6 +14,8 @@ from sklearn.ensemble import RandomForestClassifier
 
 from gst_image.models import RegionAnalysis, RegionClassifierRecipe
 
+REGION_CLASSIFICATION_MAX_PIXELS = 4_500_000
+
 
 def snap_region_boundaries(
     image: np.ndarray, labels: np.ndarray, band_px: int = 3
@@ -47,8 +49,14 @@ def classify_regions(
     class_ids = sorted(int(value) for value in np.unique(training_strokes) if value > 0)
     if len(class_ids) < 2:
         raise ValueError("Paint training strokes for at least two region classes")
-    if preview.shape[0] * preview.shape[1] > 4_500_000:
-        raise ValueError("Region classification requires a preview no larger than 4.5 MP")
+    pixel_count = preview.shape[0] * preview.shape[1]
+    if pixel_count > REGION_CLASSIFICATION_MAX_PIXELS:
+        height, width = preview.shape[:2]
+        raise ValueError(
+            f"The region-classification overview is {width} x {height} pixels "
+            f"({pixel_count / 1_000_000:.2f} MP), above the 4.5 MP limit. "
+            "Reduce Overview resolution, click Show overview, and train again."
+        )
     if cancelled and cancelled():
         raise InterruptedError("Analysis cancelled")
     if progress:

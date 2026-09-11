@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-import traceback
+import logging
 from threading import Event
 
 from PySide6.QtCore import QObject, QRunnable, Signal, Slot
+
+logger = logging.getLogger(__name__)
 
 
 class WorkerSignals(QObject):
@@ -39,8 +41,8 @@ class FunctionWorker(QRunnable):
             self.signals.result.emit(value)
         except InterruptedError:
             self.signals.error.emit("Analysis cancelled")
-        except Exception:
-            self.signals.error.emit(traceback.format_exc())
+        except Exception as error:
+            logger.exception("Background analysis failed")
+            self.signals.error.emit(str(error) or type(error).__name__)
         finally:
             self.signals.finished.emit()
-

@@ -8,7 +8,15 @@ from pathlib import Path
 import cv2
 import numpy as np
 from PySide6.QtCore import QPointF, Qt, QThreadPool, QTimer
-from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QColor, QUndoCommand, QUndoStack
+from PySide6.QtGui import (
+    QAction,
+    QActionGroup,
+    QCloseEvent,
+    QColor,
+    QKeySequence,
+    QUndoCommand,
+    QUndoStack,
+)
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -51,6 +59,7 @@ from gst_image.analysis import (
 from gst_image.analysis.groups import particle_group_summary
 from gst_image.analysis.particles import merge_particle_labels, split_particle_by_line
 from gst_image.analysis.preprocess import to_gray
+from gst_image.analysis.regions import REGION_CLASSIFICATION_MAX_PIXELS
 from gst_image.export import export_analysis
 from gst_image.image_io import (
     load_image,
@@ -409,6 +418,21 @@ class MainWindow(QMainWindow):
         edit_menu = self.menuBar().addMenu("&Edit")
         edit_menu.addAction(self.undo_stack.createUndoAction(self, "Undo"))
         edit_menu.addAction(self.undo_stack.createRedoAction(self, "Redo"))
+        edit_menu.addSeparator()
+        self.decrease_brush_action = QAction("Decrease brush radius", self)
+        self.decrease_brush_action.setShortcut(QKeySequence("["))
+        self.decrease_brush_action.triggered.connect(
+            lambda: self._adjust_brush_radius(-1)
+        )
+        self.decrease_brush_action.setEnabled(False)
+        edit_menu.addAction(self.decrease_brush_action)
+        self.increase_brush_action = QAction("Increase brush radius", self)
+        self.increase_brush_action.setShortcut(QKeySequence("]"))
+        self.increase_brush_action.triggered.connect(
+            lambda: self._adjust_brush_radius(1)
+        )
+        self.increase_brush_action.setEnabled(False)
+        edit_menu.addAction(self.increase_brush_action)
 
         toolbar = QToolBar("Tools", self)
         toolbar.setMovable(False)
@@ -426,6 +450,7 @@ class MainWindow(QMainWindow):
             ("Exclude box", "exclude"),
             ("Polygon", "polygon"),
             ("Class seed", "seed"),
+            ("Seed eraser", "seed_eraser"),
             ("Mask brush", "mask_brush"),
             ("Mask eraser", "mask_eraser"),
             ("Split", "split"),
@@ -434,7 +459,9 @@ class MainWindow(QMainWindow):
         for label, name in tools:
             action = QAction(label, self)
             action.setCheckable(True)
-            action.triggered.connect(lambda checked=False, value=name: self.canvas.set_tool(value))
+            action.triggered.connect(
+                lambda checked=False, value=name: self._activate_tool(value)
+            )
             toolbar.addAction(action)
             group.addAction(action)
             self.tool_actions[name] = action
@@ -751,6 +778,9 @@ class MainWindow(QMainWindow):
         class_buttons.addWidget(rename_class)
         layout.addLayout(class_buttons)
         self.train_regions_button = QPushButton("Train / update region classifier")
+        self.train_regions_button.setToolTip(
+            "Classifies the overview image, which must be no larger than 4.5 megapixels."
+        )
         self.train_regions_button.clicked.connect(self.train_regions)
         layout.addWidget(self.train_regions_button)
         layout.addStretch(1)
@@ -843,10 +873,63 @@ class MainWindow(QMainWindow):
         self.canvas.rectangle_finished.connect(self._rectangle_finished)
         self.canvas.polygon_finished.connect(self._polygon_finished)
         self.canvas.brush_stroke.connect(self._brush_stroke)
+        self.canvas.brush_radius_adjust_requested.connect(self._adjust_brush_radius)
         self.canvas.scene_clicked.connect(self._select_particle)
         self.canvas.coordinates_changed.connect(
             lambda point: self.statusBar().showMessage(f"x={point.x():.1f}, y={point.y():.1f}")
         )
+        self.brush_radius.valueChanged.connect(self.canvas.set_brush_radius)
+        self.canvas.set_brush_radius(self.brush_radius.value())
+
+    def _activate_tool(self, tool: str) -> None:
+        """Activate a canvas tool and keep brush-only controls/context in sync."""
+        self.canvas.set_tool(tool)
+        brush_active = tool in self.canvas.BRUSH_TOOLS
+        self.decrease_brush_action.setEnabled(brush_active)
+        self.increase_brush_action.setEnabled(brush_active)
+        if tool in {"seed", "seed_eraser"}:
+            self._render_training_overlay()
+        elif self.manifest is not None:
+            self._render_visible_layers()
+        if tool in {"mask_brush", "mask_eraser"}:
+            layer = self._current_editable_layer()
+            if layer is None:
+                self.statusBar().showMessage(
+                    "No editable mask is selected. Run particles or region "
+                    "classification, then select its layer.",
+                    6000,
+                )
+            else:
+                self.statusBar().showMessage(
+                    f"Editing {layer.name}; brush radius: {self.brush_radius.value()} px",
+                    4000,
+                )
+
+    def _adjust_brush_radius(self, delta: int) -> None:
+        if self.canvas.current_tool not in self.canvas.BRUSH_TOOLS:
+            return
+        previous = self.brush_radius.value()
+        self.brush_radius.setValue(previous + delta)
+        current = self.brush_radius.value()
+        if current != previous:
+            self.statusBar().showMessage(f"Brush radius: {current} px", 2000)
+
+    def _current_editable_layer(self) -> SegmentationLayer | None:
+        if self.manifest is None or self.current_layer_id is None:
+            return None
+        layer = next(
+            (
+                item
+                for item in self.manifest.layers
+                if item.id == self.current_layer_id and item.kind != "domain"
+            ),
+            None,
+        )
+        if layer is None:
+            return None
+        if layer.kind == "multiclass":
+            return layer if self.current_labels is not None else None
+        return layer if self.current_mask is not None else None
 
     def _set_dirty(self, dirty: bool = True) -> None:
         self.dirty = dirty
@@ -1001,6 +1084,8 @@ class MainWindow(QMainWindow):
         self.display_region_bgr = None
         self.display_region_bounds = None
         self._set_canvas_image(self.preview_bgr)
+        if self.canvas.current_tool in {"seed", "seed_eraser"}:
+            self._render_training_overlay()
         self.statusBar().showMessage(
             f"Showing overview at {self.overview_resolution.value()}% resolution ")
         return True
@@ -1027,6 +1112,8 @@ class MainWindow(QMainWindow):
         self.display_region_bgr = image
         self.display_region_bounds = bounds
         self._set_canvas_image(image, bounds)
+        if self.canvas.current_tool in {"seed", "seed_eraser"}:
+            self._render_training_overlay()
         self.statusBar().showMessage(
             f"Showing {image.shape[1]} × {image.shape[0]} ROI pixels "
             f"at {self.roi_resolution.value()}% resolution",
@@ -1139,6 +1226,8 @@ class MainWindow(QMainWindow):
         self.training_labels = np.zeros(preview.shape[:2], dtype=np.uint16)
         self.run_scope_ids = []
         self._restore_training_strokes()
+        if self.canvas.current_tool in {"seed", "seed_eraser"}:
+            self._render_training_overlay()
         self._refresh_all()
         self._set_dirty(False)
 
@@ -1660,17 +1749,10 @@ class MainWindow(QMainWindow):
     def _brush_stroke(self, tool: str, points: list[QPointF]) -> None:
         if self.manifest is None:
             return
-        if tool == "seed":
-            self._paint_training(points)
+        if tool in {"seed", "seed_eraser"}:
+            self._paint_training(points, erase=tool == "seed_eraser")
         elif tool in {"mask_brush", "mask_eraser"}:
-            layer = next(
-                (
-                    item
-                    for item in self.manifest.layers
-                    if item.id == self.current_layer_id
-                ),
-                None,
-            )
+            layer = self._current_editable_layer()
             if layer and layer.kind == "multiclass" and self.current_labels is not None:
                 class_id = self.seed_class.currentData()
                 value = next(
@@ -1679,25 +1761,32 @@ class MainWindow(QMainWindow):
                         for label, mapped_class in layer.class_value_map.items()
                         if mapped_class == class_id
                     ),
-                    0,
+                    None,
                 )
-                if value or tool == "mask_eraser":
+                if value is None and tool == "mask_brush" and class_id is not None:
+                    value = max(layer.class_value_map, default=0) + 1
+                    layer.class_value_map[value] = class_id
+                if value is not None or tool == "mask_eraser":
                     self.undo_stack.push(
-                        RegionPaintCommand(
-                            self, points, value, tool == "mask_eraser"
-                        )
+                        RegionPaintCommand(self, points, value or 0, tool == "mask_eraser")
                     )
-            elif self.current_mask is not None:
+            elif layer is not None and self.current_mask is not None:
                 self.undo_stack.push(MaskLineCommand(self, points, tool == "mask_eraser"))
+            else:
+                self.statusBar().showMessage(
+                    "Nothing to paint. Run particles or region classification, "
+                    "then select the result layer.",
+                    6000,
+                )
 
-    def _paint_training(self, points: list[QPointF]) -> None:
+    def _paint_training(self, points: list[QPointF], *, erase: bool = False) -> None:
         if self.training_labels is None or self.preview_bgr is None:
             return
         trainable = self._trainable_classes()
         class_index = self.seed_class.currentIndex()
         if class_index < 0:
             return
-        label = class_index + 1
+        label = 0 if erase else class_index + 1
         sx = self.preview_bgr.shape[1] / self.manifest.image_width
         sy = self.preview_bgr.shape[0] / self.manifest.image_height
         coords = [(round(point.x() * sx), round(point.y() * sy)) for point in points]
@@ -1712,11 +1801,26 @@ class MainWindow(QMainWindow):
                 class_id=class_id,
                 points=[Point(x=point.x(), y=point.y()) for point in points],
                 radius_px=self.brush_radius.value(),
+                erase=erase,
             )
         )
         colors = {index + 1: self._class_rgb(item.color) for index, item in enumerate(trainable)}
-        self.canvas.set_label_overlay(self.training_labels, colors, 0.35)
+        self.canvas.set_label_overlay(
+            self.training_labels, colors, 0.35, align_to_source=True
+        )
         self._set_dirty(True)
+
+    def _render_training_overlay(self) -> None:
+        """Render overview-sized class seeds at their full-source positions."""
+        if self.training_labels is None:
+            return
+        colors = {
+            index + 1: self._class_rgb(item.color)
+            for index, item in enumerate(self._trainable_classes())
+        }
+        self.canvas.set_label_overlay(
+            self.training_labels, colors, 0.35, align_to_source=True
+        )
 
     def _restore_training_strokes(self) -> None:
         if self.training_labels is None or self.preview_bgr is None:
@@ -1726,7 +1830,7 @@ class MainWindow(QMainWindow):
         sx = self.preview_bgr.shape[1] / self.manifest.image_width
         sy = self.preview_bgr.shape[0] / self.manifest.image_height
         for stroke in self.manifest.training_strokes:
-            label = class_indexes.get(stroke.class_id)
+            label = 0 if stroke.erase else class_indexes.get(stroke.class_id)
             if label is None or not stroke.points:
                 continue
             coords = [(round(p.x * sx), round(p.y * sy)) for p in stroke.points]
@@ -1738,6 +1842,22 @@ class MainWindow(QMainWindow):
 
     def train_regions(self) -> None:
         if self.preview_bgr is None or self.training_labels is None or self.worker is not None:
+            return
+        height, width = self.preview_bgr.shape[:2]
+        pixel_count = width * height
+        if pixel_count > REGION_CLASSIFICATION_MAX_PIXELS:
+            recommended = self._maximum_region_overview_resolution()
+            QMessageBox.warning(
+                self,
+                "Region-classification overview is too large",
+                f"The current overview is {width} x {height} pixels "
+                f"({pixel_count / 1_000_000:.2f} MP). Region classification is "
+                "limited to 4.5 MP to control memory use.\n\n"
+                f"Set Overview resolution to {recommended}% or lower, click "
+                "Show overview, and then train again. Existing class-seed strokes "
+                "will be rescaled automatically. Selected-ROI resolution does not "
+                "affect region classification.",
+            )
             return
         recipe = self.manifest.region_recipes[-1] if self.manifest.region_recipes else RegionClassifierRecipe()
         worker = FunctionWorker(
@@ -1756,6 +1876,16 @@ class MainWindow(QMainWindow):
         self.run_button.setEnabled(False)
         self.cancel_button.setEnabled(True)
         self.thread_pool.start(worker)
+
+    def _maximum_region_overview_resolution(self) -> int:
+        if self.manifest is None:
+            return 1
+        for percent in range(100, 0, -1):
+            width = max(1, round(self.manifest.image_width * percent / 100))
+            height = max(1, round(self.manifest.image_height * percent / 100))
+            if width * height <= REGION_CLASSIFICATION_MAX_PIXELS:
+                return percent
+        return 1
 
     def _region_result(self, result) -> None:
         full_labels = cv2.resize(

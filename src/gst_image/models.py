@@ -347,6 +347,7 @@ class TrainingStroke(BaseModel):
     class_id: str
     points: list[Point]
     radius_px: float = Field(default=12, gt=0)
+    erase: bool = False
 
 
 class ProjectManifest(BaseModel):

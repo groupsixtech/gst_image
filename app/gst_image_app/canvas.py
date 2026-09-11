@@ -9,6 +9,7 @@ import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPen, QPixmap, QTransform
 from PySide6.QtWidgets import (
+    QGraphicsEllipseItem,
     QGraphicsItem,
     QGraphicsPathItem,
     QGraphicsPixmapItem,
@@ -41,12 +42,13 @@ class ImageCanvas(QGraphicsView):
     rectangle_finished = Signal(str, object, object)
     polygon_finished = Signal(str, object)
     brush_stroke = Signal(str, object)
+    brush_radius_adjust_requested = Signal(int)
     scene_clicked = Signal(object)
     coordinates_changed = Signal(object)
 
     LINE_TOOLS: ClassVar = {"calibrate", "measure", "split"}
     RECT_TOOLS: ClassVar = {"include", "exclude", "analysis_box"}
-    BRUSH_TOOLS: ClassVar = {"seed", "mask_brush", "mask_eraser"}
+    BRUSH_TOOLS: ClassVar = {"seed", "seed_eraser", "mask_brush", "mask_eraser"}
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -69,6 +71,8 @@ class ImageCanvas(QGraphicsView):
         self._temporary: QGraphicsItem | None = None
         self._polygon: list[QPointF] = []
         self._brush_points: list[QPointF] = []
+        self._brush_radius = 12
+        self._brush_cursor_item: QGraphicsEllipseItem | None = None
 
     @property
     def source_size(self) -> tuple[int, int]:
@@ -98,6 +102,15 @@ class ImageCanvas(QGraphicsView):
         self.viewport().setCursor(
             Qt.CursorShape.OpenHandCursor if tool == "pan" else Qt.CursorShape.CrossCursor
         )
+        if self._brush_cursor_item is not None:
+            self._brush_cursor_item.setVisible(tool in self.BRUSH_TOOLS)
+
+    def set_brush_radius(self, radius: int) -> None:
+        """Set the source-pixel brush radius used by the on-canvas outline."""
+        self._brush_radius = max(1, int(radius))
+        if self._brush_cursor_item is not None and self._brush_cursor_item.isVisible():
+            center = self._brush_cursor_item.rect().center()
+            self._position_brush_cursor(center)
 
     def set_image(
         self,
@@ -106,6 +119,9 @@ class ImageCanvas(QGraphicsView):
         source_rect: tuple[int, int, int, int] | None = None,
     ) -> None:
         self.scene().clear()
+        self._temporary = None
+        self._start = None
+        self._brush_points.clear()
         self._preview_size = (preview_bgr.shape[1], preview_bgr.shape[0])
         self._source_size = full_size
         left, top, right, bottom = source_rect or (0, 0, full_size[0], full_size[1])
@@ -128,6 +144,11 @@ class ImageCanvas(QGraphicsView):
         roi_pen = QPen(QColor("#00e5ff"), 2, Qt.PenStyle.DashLine)
         self._roi_item = self.scene().addPath(QPainterPath(), roi_pen)
         self._roi_item.setZValue(19)
+        brush_pen = QPen(QColor("#ff2d95"), 2, Qt.PenStyle.SolidLine)
+        brush_pen.setCosmetic(True)
+        self._brush_cursor_item = self.scene().addEllipse(QRectF(), brush_pen)
+        self._brush_cursor_item.setZValue(40)
+        self._brush_cursor_item.setVisible(False)
         self.fitInView(self.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
 
     def _values_in_display_rect(self, values: np.ndarray) -> np.ndarray:
@@ -183,16 +204,28 @@ class ImageCanvas(QGraphicsView):
         self._position_overlay(self._overlay_item)
 
     def set_label_overlay(
-        self, labels: np.ndarray | None, colors: dict[int, tuple[int, int, int]], opacity: float = 0.45
+        self,
+        labels: np.ndarray | None,
+        colors: dict[int, tuple[int, int, int]],
+        opacity: float = 0.45,
+        *,
+        align_to_source: bool = False,
     ) -> None:
+        """Display labels in either the current-view or full-source coordinate space."""
         if labels is None:
             self.set_mask_overlay(None)
             return
-        width, height = self._preview_size
-        visible = self._values_in_display_rect(labels)
-        small = cv2.resize(
-            visible.astype(np.int32), (width, height), interpolation=cv2.INTER_NEAREST
-        )
+        if align_to_source:
+            small = np.asarray(labels, dtype=np.int32)
+            height, width = small.shape[:2]
+        else:
+            width, height = self._preview_size
+            visible = self._values_in_display_rect(labels)
+            small = cv2.resize(
+                visible.astype(np.int32),
+                (width, height),
+                interpolation=cv2.INTER_NEAREST,
+            )
         rgba = np.zeros((height, width, 4), dtype=np.uint8)
         for label, color in colors.items():
             member = small == label
@@ -204,7 +237,15 @@ class ImageCanvas(QGraphicsView):
             rgba.data, width, height, rgba.strides[0], QImage.Format.Format_RGBA8888
         ).copy()
         self._overlay_item = self.scene().addPixmap(QPixmap.fromImage(image))
-        self._position_overlay(self._overlay_item)
+        if align_to_source:
+            source_width, source_height = self._source_size
+            self._overlay_item.setTransform(
+                QTransform.fromScale(source_width / width, source_height / height)
+            )
+            self._overlay_item.setPos(0, 0)
+            self._overlay_item.setZValue(10)
+        else:
+            self._position_overlay(self._overlay_item)
 
     def set_particle_group_overlay(
         self,
@@ -311,6 +352,9 @@ class ImageCanvas(QGraphicsView):
     def mouseMoveEvent(self, event) -> None:
         point = self.mapToScene(event.position().toPoint())
         self.coordinates_changed.emit(point)
+        if self._brush_cursor_item is not None and self._tool in self.BRUSH_TOOLS:
+            self._position_brush_cursor(point)
+            self._brush_cursor_item.setVisible(self._display_rect.contains(point))
         if self._start is not None and self._tool in self.LINE_TOOLS:
             self._draw_line(self._start, point)
         elif self._start is not None and self._tool in self.RECT_TOOLS:
@@ -320,8 +364,28 @@ class ImageCanvas(QGraphicsView):
             self.brush_stroke.emit(self._tool, list(self._brush_points[-2:]))
         super().mouseMoveEvent(event)
 
+    def leaveEvent(self, event) -> None:
+        if self._brush_cursor_item is not None:
+            self._brush_cursor_item.setVisible(False)
+        super().leaveEvent(event)
+
+    def keyPressEvent(self, event) -> None:
+        if self._tool in self.BRUSH_TOOLS:
+            if event.key() == Qt.Key.Key_BracketLeft:
+                self.brush_radius_adjust_requested.emit(-1)
+                event.accept()
+                return
+            if event.key() == Qt.Key.Key_BracketRight:
+                self.brush_radius_adjust_requested.emit(1)
+                event.accept()
+                return
+        super().keyPressEvent(event)
+
     def mousePressEvent(self, event) -> None:
         point = self.mapToScene(event.position().toPoint())
+        if self._brush_cursor_item is not None and self._tool in self.BRUSH_TOOLS:
+            self._position_brush_cursor(point)
+            self._brush_cursor_item.setVisible(self._display_rect.contains(point))
         if event.button() == Qt.MouseButton.LeftButton:
             if self._tool in self.LINE_TOOLS | self.RECT_TOOLS:
                 self._start = point
@@ -364,6 +428,17 @@ class ImageCanvas(QGraphicsView):
         if self._temporary is not None and self._temporary.scene() is not None:
             self.scene().removeItem(self._temporary)
         self._temporary = None
+
+    def _position_brush_cursor(self, center: QPointF) -> None:
+        if self._brush_cursor_item is None:
+            return
+        radius = self._brush_radius
+        self._brush_cursor_item.setRect(
+            center.x() - radius,
+            center.y() - radius,
+            radius * 2,
+            radius * 2,
+        )
 
     def _draw_line(self, start: QPointF, end: QPointF) -> None:
         self._clear_temporary()

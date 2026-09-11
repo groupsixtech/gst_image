@@ -45,9 +45,13 @@ not on `PATH`.
    **Run particles — full resolution** action always analyzes the original source image.
    Use the eyedropper to set either endpoint of a manual threshold range or a
    segmentation-class color directly from a native-resolution 5 × 5 source sample.
-5. Inspect the overlay and particle table; use mask brush/eraser and split/merge corrections.
-6. For macro zones, paint example strokes for Weld, HAZ, Base, or custom classes and train
-   the assisted classifier.
+5. Inspect the overlay and particle table; select the saved result layer before using its
+   mask brush/eraser or split/merge corrections. While a class seed, seed eraser, mask brush,
+   or mask eraser is active, use `[` and `]` to decrease or increase its source-pixel radius.
+   The pink canvas outline shows the active brush footprint.
+6. For macro zones, follow the [assisted region-classification guide](docs/region-classification.md)
+   to paint and erase example strokes for Weld, HAZ, Base, or custom classes and train the
+   classifier.
 7. Save the project and export masks, overlays, measurements, fractions, and particle CSVs.
 
 Analysis values have linked sliders and numeric fields for quick tuning and exact entry.

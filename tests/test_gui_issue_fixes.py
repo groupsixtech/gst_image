@@ -7,7 +7,15 @@ from gst_image_app.mainwindow import MainWindow, _analyze_region_preview, _analy
 from PySide6.QtCore import QPointF, Qt
 
 from gst_image.analysis.calibration import create_measurement
-from gst_image.models import ROI, Calibration, Point, ROIKind, SegmentationRecipe, ThresholdMethod
+from gst_image.models import (
+    ROI,
+    Calibration,
+    Point,
+    ROIKind,
+    SegmentationLayer,
+    SegmentationRecipe,
+    ThresholdMethod,
+)
 
 
 def _source(tmp_path, *, shape=(40, 60), bgr=(30, 60, 90)):
@@ -91,6 +99,120 @@ def test_eyedropper_reads_native_source_for_threshold_and_class_color(qtbot, tmp
     )
     assert selected_class.color == "#5a3c1e"
     window._set_dirty(False)
+
+
+def test_class_seed_overlay_stays_in_source_coordinates_in_roi_view(qtbot, tmp_path):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_new_image(_source(tmp_path))
+    window.manifest.rois.append(_rectangle())
+    window._refresh_rois()
+    window.rois_list.item(0).setSelected(True)
+    assert window.show_full_resolution_roi()
+
+    window._activate_tool("seed")
+    window._paint_training([QPointF(20, 16)])
+
+    assert window.training_labels[4, 5] > 0
+    overlay = window.canvas._overlay_item
+    assert overlay is not None
+    assert overlay.pixmap().size().toTuple() == (15, 10)
+    assert overlay.pos() == QPointF(0, 0)
+    assert overlay.transform().m11() == 4
+    assert overlay.transform().m22() == 4
+    assert overlay.mapToScene(QPointF(5, 4)) == QPointF(20, 16)
+    window._set_dirty(False)
+
+
+def test_bracket_shortcuts_adjust_active_mask_brush_radius(qtbot, tmp_path):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_new_image(_source(tmp_path))
+    window.show()
+    window._set_dirty(False)
+    window._activate_tool("mask_brush")
+    window.brush_radius.setValue(12)
+    window.activateWindow()
+    window.canvas.setFocus()
+
+    qtbot.keyClick(window.canvas, Qt.Key.Key_BracketRight)
+    assert window.brush_radius.value() == 13
+    qtbot.keyClick(window.canvas, Qt.Key.Key_BracketLeft)
+    assert window.brush_radius.value() == 12
+
+
+def test_mask_brush_and_eraser_edit_selected_result_with_immediate_overlay(
+    qtbot, tmp_path
+):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_new_image(_source(tmp_path))
+    window._set_dirty(False)
+    layer = SegmentationLayer(name="Editable particles", kind="instances")
+    labels = np.zeros((40, 60), dtype=np.int32)
+    window.manifest.layers.append(layer)
+    window.layer_masks[layer.id] = labels
+    window.current_layer_id = layer.id
+    window.current_labels = labels
+    window.current_mask = np.zeros_like(labels, dtype=np.uint8)
+
+    window._activate_tool("mask_brush")
+    window._brush_stroke("mask_brush", [QPointF(20, 16)])
+    assert window.current_mask[16, 20] == 1
+    assert window.canvas._overlay_item is not None
+
+    window._activate_tool("mask_eraser")
+    window._brush_stroke("mask_eraser", [QPointF(20, 16)])
+    assert window.current_mask[16, 20] == 0
+    window.mask_commit_timer.stop()
+    window._set_dirty(False)
+
+
+def test_seed_eraser_is_persisted_and_replayed(qtbot, tmp_path):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_new_image(_source(tmp_path))
+
+    window._paint_training([QPointF(20, 16)])
+    assert window.training_labels[4, 5] > 0
+    window._paint_training([QPointF(20, 16)], erase=True)
+    assert window.training_labels[4, 5] == 0
+    assert window.manifest.training_strokes[-1].erase
+
+    window.training_labels.fill(0)
+    window._restore_training_strokes()
+    assert window.training_labels[4, 5] == 0
+    window._set_dirty(False)
+
+
+def test_region_training_warns_with_safe_overview_resolution(
+    qtbot, tmp_path, monkeypatch
+):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_new_image(_source(tmp_path))
+    window._set_dirty(False)
+    monkeypatch.setattr(mainwindow_module, "REGION_CLASSIFICATION_MAX_PIXELS", 100)
+    messages = []
+    monkeypatch.setattr(
+        mainwindow_module.QMessageBox,
+        "warning",
+        lambda _parent, title, message: messages.append((title, message)),
+    )
+
+    window.train_regions()
+
+    assert window.worker is None
+    assert len(messages) == 1
+    title, message = messages[0]
+    assert title == "Region-classification overview is too large"
+    assert "15 x 10 pixels" in message
+    assert "20% or lower" in message
+    assert "Selected-ROI resolution does not affect" in message
+
+    window._activate_tool("select")
+    qtbot.keyClick(window.canvas, Qt.Key.Key_BracketRight)
+    assert window.brush_radius.value() == 12
 
 
 def test_measurement_text_includes_calibrated_and_pixel_lengths(qtbot, tmp_path):
