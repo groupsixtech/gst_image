@@ -72,6 +72,10 @@ def threshold_array(
     if recipe.gaussian_blur_sigma > 0:
         gray = cv2.GaussianBlur(gray, (0, 0), recipe.gaussian_blur_sigma)
     dark = recipe.polarity == ParticlePolarity.DARK
+    if recipe.threshold_method == ThresholdMethod.MANUAL:
+        return (gray >= recipe.manual_threshold_low) & (
+            gray <= recipe.manual_threshold_high
+        )
     if recipe.threshold_method == ThresholdMethod.SAUVOLA:
         threshold = threshold_sauvola(
             gray,
@@ -93,11 +97,7 @@ def threshold_array(
             )
             > 0
         )
-    threshold = (
-        recipe.manual_threshold
-        if recipe.threshold_method == ThresholdMethod.MANUAL
-        else global_otsu_threshold
-    )
+    threshold = global_otsu_threshold
     if threshold is None:
         threshold, _ = cv2.threshold(gray, 0, 255, cv2.THRESH_OTSU)
     return gray < threshold if dark else gray > threshold

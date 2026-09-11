@@ -17,7 +17,7 @@ from PIL import Image
 
 from gst_image import __version__
 from gst_image.image_io import load_preview, sha256_file
-from gst_image.models import ProjectManifest
+from gst_image.models import PROJECT_SCHEMA_VERSION, ProjectManifest
 
 MANIFEST_NAME = "project.json"
 DEPENDENCIES = (
@@ -52,9 +52,11 @@ def dependency_versions() -> dict[str, str]:
 
 def _migrate(payload: dict[str, Any]) -> dict[str, Any]:
     version = int(payload.get("schema_version", 1))
-    if version > 1:
+    if version > PROJECT_SCHEMA_VERSION:
         raise ValueError(f"Project schema {version} is newer than this application supports")
-    payload["schema_version"] = 1
+    # SegmentationRecipe's pre-validator translates legacy manual_threshold
+    # values wherever recipes occur, including recipes embedded in run history.
+    payload["schema_version"] = PROJECT_SCHEMA_VERSION
     return payload
 
 
@@ -72,6 +74,7 @@ def save_project(
     previews_dir = root / "previews"
     for directory in (root, masks_dir, results_dir, previews_dir):
         directory.mkdir(parents=True, exist_ok=True)
+    manifest.schema_version = PROJECT_SCHEMA_VERSION
     manifest.application_version = __version__
     manifest.dependency_versions = dependency_versions()
     manifest.updated_at = datetime.now(UTC)

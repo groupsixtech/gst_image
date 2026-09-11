@@ -10,4 +10,5 @@
 - [x] Added independent 0-100% overview and selected-ROI resolution controls; 100% loads native resolution while final analysis remains full resolution regardless of preview settings.
 - [x] Added threshold post-processing controls for morphological closing and border-seeded flood filling of enclosed holes. https://medium.com/python-other/hole-filling-of-opencv-binary-image-use-floodfill-eb9464023b20
 - [x] Added an ImageJ/MorphoLibJ-inspired morphological watershed segmentation method with object/border inputs, morphological/internal/external gradients, extended-minima tolerance, 4/8 connectivity, and optional dams. https://imagej.net/plugins/morphological-segmentation
-- [ ] Class seed mask brush       
+- [x] Replaced the one-sided manual threshold with an inclusive lower/upper intensity range, including eyedropper targets and legacy project/recipe migration.
+- [ ] Class seed mask brush

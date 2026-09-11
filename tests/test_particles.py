@@ -16,6 +16,7 @@ from gst_image.models import (
     MorphologicalGradient,
     MorphologicalInput,
     ParticleGroup,
+    ParticlePolarity,
     SegmentationMethod,
     SegmentationRecipe,
     ThresholdMethod,
@@ -31,7 +32,8 @@ def test_manual_segmentation_and_radius_measurement():
     cv2.circle(gold, (170, 90), 30, 1, cv2.FILLED)
     recipe = SegmentationRecipe(
         threshold_method=ThresholdMethod.MANUAL,
-        manual_threshold=100,
+        manual_threshold_low=0,
+        manual_threshold_high=99,
         illumination_correction=False,
         min_particle_area_px=100,
         split_touching=False,
@@ -81,7 +83,8 @@ def test_every_threshold_method_produces_a_binary_selection(method):
     image = np.tile(np.linspace(20, 230, 31, dtype=np.uint8), (31, 1))
     recipe = SegmentationRecipe(
         threshold_method=method,
-        manual_threshold=125,
+        manual_threshold_low=0,
+        manual_threshold_high=124,
         sauvola_window_px=9,
         gaussian_block_px=9,
         gaussian_c=2,
@@ -94,12 +97,37 @@ def test_every_threshold_method_produces_a_binary_selection(method):
     assert np.any(~selected)
 
 
+@pytest.mark.parametrize("polarity", list(ParticlePolarity))
+def test_manual_threshold_selects_an_inclusive_band_independent_of_polarity(polarity):
+    image = np.array([[9, 10, 15, 20, 21]], dtype=np.uint8)
+    recipe = SegmentationRecipe(
+        threshold_method=ThresholdMethod.MANUAL,
+        manual_threshold_low=10,
+        manual_threshold_high=20,
+        polarity=polarity,
+        gaussian_blur_sigma=0,
+    )
+    assert threshold_array(image, recipe).tolist() == [
+        [False, True, True, True, False]
+    ]
+
+
+@pytest.mark.parametrize(
+    ("low", "high"),
+    [(-1, 20), (10, 256), (21, 20)],
+)
+def test_manual_threshold_rejects_invalid_ranges(low, high):
+    with pytest.raises(ValueError, match="manual_threshold|Manual threshold"):
+        SegmentationRecipe(manual_threshold_low=low, manual_threshold_high=high)
+
+
 def test_flood_fill_option_fills_enclosed_particle_holes():
     image = np.full((100, 100), 220, np.uint8)
     cv2.circle(image, (50, 50), 25, 30, 8)
     common = {
         "threshold_method": ThresholdMethod.MANUAL,
-        "manual_threshold": 100,
+        "manual_threshold_low": 0,
+        "manual_threshold_high": 99,
         "illumination_correction": False,
         "gaussian_blur_sigma": 0,
         "open_radius_px": 0,
@@ -128,7 +156,8 @@ def test_morphological_closing_joins_narrow_threshold_gaps():
     cv2.rectangle(image, (47, 35), (76, 65), 30, cv2.FILLED)
     common = {
         "threshold_method": ThresholdMethod.MANUAL,
-        "manual_threshold": 100,
+        "manual_threshold_low": 0,
+        "manual_threshold_high": 99,
         "illumination_correction": False,
         "gaussian_blur_sigma": 0,
         "open_radius_px": 0,
@@ -163,7 +192,8 @@ def test_morphological_watershed_segments_threshold_foreground(gradient):
         morphological_connectivity=4,
         morphological_calculate_dams=True,
         threshold_method=ThresholdMethod.MANUAL,
-        manual_threshold=100,
+        manual_threshold_low=0,
+        manual_threshold_high=99,
         illumination_correction=False,
         gaussian_blur_sigma=0,
         open_radius_px=0,
@@ -213,7 +243,8 @@ def test_physical_morphology_requires_calibration():
     recipe = SegmentationRecipe(
         illumination_correction=False,
         threshold_method=ThresholdMethod.MANUAL,
-        manual_threshold=100,
+        manual_threshold_low=0,
+        manual_threshold_high=99,
         open_radius_mm=0.01,
         split_touching=False,
     )
@@ -228,7 +259,8 @@ def test_watershed_split_and_manual_label_edits_preserve_instances():
     recipe = SegmentationRecipe(
         illumination_correction=False,
         threshold_method=ThresholdMethod.MANUAL,
-        manual_threshold=100,
+        manual_threshold_low=0,
+        manual_threshold_high=99,
         min_particle_area_px=200,
         split_touching=True,
         watershed_min_distance_px=15,
@@ -251,7 +283,8 @@ def test_tiled_processing_preserves_particle_crossing_tile_boundary():
     common = {
         "illumination_correction": False,
         "threshold_method": ThresholdMethod.MANUAL,
-        "manual_threshold": 100,
+        "manual_threshold_low": 0,
+        "manual_threshold_high": 99,
         "min_particle_area_px": 100,
         "split_touching": False,
         "open_radius_px": 0,

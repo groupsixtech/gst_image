@@ -67,8 +67,18 @@ def test_eyedropper_reads_native_source_for_threshold_and_class_color(qtbot, tmp
     qtbot.mouseClick(
         window.canvas.viewport(), Qt.MouseButton.LeftButton, pos=viewport_point
     )
-    assert window.manual_threshold.value() == 66
+    assert window.manual_threshold_high.value() == 66
+    assert window.manual_threshold_low.value() == 0
     assert window.method.currentData() == ThresholdMethod.MANUAL
+
+    window.eyedropper_target.setCurrentIndex(
+        window.eyedropper_target.findData("threshold_low")
+    )
+    qtbot.mouseClick(
+        window.canvas.viewport(), Qt.MouseButton.LeftButton, pos=viewport_point
+    )
+    assert window.manual_threshold_low.value() == 66
+    assert window.manual_threshold_high.value() == 66
 
     window.eyedropper_target.setCurrentIndex(
         window.eyedropper_target.findData("binary_color")

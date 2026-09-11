@@ -43,8 +43,8 @@ not on `PATH`.
    independently from 0-100%; 100% uses native pixels. Use **Fast overview** for whole-image
    tuning, or select one Include/Analysis box and choose **Selected ROI** to limit memory. The
    **Run particles — full resolution** action always analyzes the original source image.
-   Use the eyedropper to set a manual threshold or a segmentation-class color directly from
-   a native-resolution 5 × 5 source sample.
+   Use the eyedropper to set either endpoint of a manual threshold range or a
+   segmentation-class color directly from a native-resolution 5 × 5 source sample.
 5. Inspect the overlay and particle table; use mask brush/eraser and split/merge corrections.
 6. For macro zones, paint example strokes for Weld, HAZ, Base, or custom classes and train
    the assisted classifier.
@@ -62,12 +62,19 @@ Threshold-specific controls change with the selected method:
 | Sauvola | Window size and k |
 | Adaptive Gaussian | Block size and constant C |
 | Otsu | None; the threshold is calculated automatically from the analysis domain |
-| Manual | Intensity threshold, which can also be set with the eyedropper |
+| Manual | Inclusive lower and upper intensity thresholds, each settable with the eyedropper |
 
 Analysis channel, polarity, Gaussian pre-blur, optional illumination correction, morphology,
 particle-area filtering, watershed splitting, and tile size are shared settings and remain
 available when applicable. The illumination radius is hidden when correction is disabled, and
 watershed distance is hidden when splitting is disabled.
+
+Manual thresholding selects processed 8-bit channel values inside the inclusive lower/upper
+range. Particle polarity does not invert this manual band, but it still guides optional
+rolling-ball illumination correction. Version-1 projects and standalone recipe JSON files with
+a one-sided `manual_threshold` are migrated to the equivalent dark or bright range. The legacy
+Dark/0 and Bright/255 empty selections are represented by the nearest one-value range because
+an ordered 0-255 interval cannot express an empty selection.
 
 Binary closing and optional border-seeded flood filling are available after every threshold
 method. Closing joins nearby foreground and seals narrow gaps; flood filling fills enclosed

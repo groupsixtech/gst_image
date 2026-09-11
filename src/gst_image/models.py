@@ -12,6 +12,8 @@ from typing import Any, Literal
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+PROJECT_SCHEMA_VERSION = 2
+
 
 def _id() -> str:
     return str(uuid.uuid4())
@@ -140,7 +142,8 @@ class SegmentationRecipe(BaseModel):
     illumination_correction: bool = True
     rolling_ball_radius_px: int = Field(default=151, ge=3)
     threshold_method: ThresholdMethod = ThresholdMethod.SAUVOLA
-    manual_threshold: float = Field(default=128, ge=0, le=255)
+    manual_threshold_low: int = Field(default=0, ge=0, le=255)
+    manual_threshold_high: int = Field(default=127, ge=0, le=255)
     sauvola_window_px: int = Field(default=101, ge=3)
     sauvola_k: float = Field(default=0.2, ge=-1, le=1)
     gaussian_block_px: int = Field(default=101, ge=3)
@@ -167,6 +170,23 @@ class SegmentationRecipe(BaseModel):
     tile_size_px: int = Field(default=2048, ge=256)
     exclude_border_particles_from_size_stats: bool = True
 
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_manual_threshold(cls, data: Any) -> Any:
+        """Translate the legacy one-sided threshold into an inclusive 8-bit band."""
+        if not isinstance(data, dict) or "manual_threshold" not in data:
+            return data
+        values = dict(data)
+        threshold = float(values.pop("manual_threshold"))
+        polarity = ParticlePolarity(values.get("polarity", ParticlePolarity.DARK))
+        if polarity == ParticlePolarity.DARK:
+            low, high = 0, math.ceil(threshold) - 1
+        else:
+            low, high = math.floor(threshold) + 1, 255
+        values.setdefault("manual_threshold_low", max(0, min(255, low)))
+        values.setdefault("manual_threshold_high", max(0, min(255, high)))
+        return values
+
     @model_validator(mode="after")
     def normalize_windows(self) -> SegmentationRecipe:
         for field_name in ("sauvola_window_px", "gaussian_block_px"):
@@ -178,6 +198,8 @@ class SegmentationRecipe(BaseModel):
             and self.max_particle_area_px < self.min_particle_area_px
         ):
             raise ValueError("Maximum particle area must be at least the minimum")
+        if self.manual_threshold_low > self.manual_threshold_high:
+            raise ValueError("Manual threshold lower bound must not exceed the upper bound")
         return self
 
 
@@ -330,7 +352,7 @@ class TrainingStroke(BaseModel):
 class ProjectManifest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: int = 1
+    schema_version: int = PROJECT_SCHEMA_VERSION
     project_id: str = Field(default_factory=_id)
     name: str
     created_at: datetime = Field(default_factory=_now)

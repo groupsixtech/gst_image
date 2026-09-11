@@ -497,7 +497,8 @@ class MainWindow(QMainWindow):
         self.preview_resolution.addItem("Fast overview", "overview")
         self.preview_resolution.addItem("Selected ROI at full resolution", "roi_full")
         self.eyedropper_target = QComboBox()
-        self.eyedropper_target.addItem("Manual threshold", "threshold")
+        self.eyedropper_target.addItem("Manual upper threshold", "threshold_high")
+        self.eyedropper_target.addItem("Manual lower threshold", "threshold_low")
         self.eyedropper_target.addItem("Segmentation class color", "binary_color")
         self.eyedropper_target.addItem("Region class color", "region_color")
         self.window_size = QSpinBox()
@@ -518,9 +519,14 @@ class MainWindow(QMainWindow):
         self.gaussian_c.setDecimals(2)
         self.gaussian_c.setSingleStep(0.5)
         self.gaussian_c.setValue(2.0)
-        self.manual_threshold = QSpinBox()
-        self.manual_threshold.setRange(0, 255)
-        self.manual_threshold.setValue(128)
+        self.manual_threshold_low = QSpinBox()
+        self.manual_threshold_low.setRange(0, 255)
+        self.manual_threshold_low.setValue(0)
+        self.manual_threshold_high = QSpinBox()
+        self.manual_threshold_high.setRange(0, 255)
+        self.manual_threshold_high.setValue(127)
+        self.manual_threshold_low.valueChanged.connect(self._manual_threshold_low_changed)
+        self.manual_threshold_high.valueChanged.connect(self._manual_threshold_high_changed)
         self.gaussian_blur_sigma = QDoubleSpinBox()
         self.gaussian_blur_sigma.setRange(0, 20)
         self.gaussian_blur_sigma.setDecimals(2)
@@ -601,8 +607,11 @@ class MainWindow(QMainWindow):
             self.gaussian_block
         )
         self.gaussian_c_control, self.gaussian_c_slider = _slider_control(self.gaussian_c)
-        self.manual_threshold_control, self.manual_threshold_slider = _slider_control(
-            self.manual_threshold
+        self.manual_threshold_low_control, self.manual_threshold_low_slider = _slider_control(
+            self.manual_threshold_low
+        )
+        self.manual_threshold_high_control, self.manual_threshold_high_slider = _slider_control(
+            self.manual_threshold_high
         )
         self.gaussian_blur_control, self.gaussian_blur_sigma_slider = _slider_control(
             self.gaussian_blur_sigma
@@ -627,7 +636,8 @@ class MainWindow(QMainWindow):
         form.addRow("Sauvola k", self.sauvola_k_control)
         form.addRow("Adaptive block size (px)", self.gaussian_block_control)
         form.addRow("Adaptive constant C", self.gaussian_c_control)
-        form.addRow("Manual threshold", self.manual_threshold_control)
+        form.addRow("Manual lower threshold", self.manual_threshold_low_control)
+        form.addRow("Manual upper threshold", self.manual_threshold_high_control)
         form.addRow("Morphological input", self.morphological_input)
         form.addRow("Gradient type", self.morphological_gradient)
         form.addRow("Morphological gradient radius (px)", self.morphological_gradient_control)
@@ -693,7 +703,8 @@ class MainWindow(QMainWindow):
             self.sauvola_k,
             self.gaussian_block,
             self.gaussian_c,
-            self.manual_threshold,
+            self.manual_threshold_low,
+            self.manual_threshold_high,
             self.gaussian_blur_sigma,
             self.fill_holes,
             self.ball_radius,
@@ -848,6 +859,16 @@ class MainWindow(QMainWindow):
         if hasattr(self, "preview_status"):
             self.preview_status.setText("Preview parameters not confirmed")
 
+    def _manual_threshold_low_changed(self, value: int) -> None:
+        """Keep the inclusive manual threshold endpoints from crossing."""
+        if value > self.manual_threshold_high.value():
+            self.manual_threshold_high.setValue(value)
+
+    def _manual_threshold_high_changed(self, value: int) -> None:
+        """Keep the inclusive manual threshold endpoints from crossing."""
+        if value < self.manual_threshold_low.value():
+            self.manual_threshold_low.setValue(value)
+
     def _set_analysis_row_visible(self, field: QWidget, visible: bool) -> None:
         field.setVisible(visible)
         label = self.analysis_form.labelForField(field)
@@ -872,7 +893,10 @@ class MainWindow(QMainWindow):
             method == ThresholdMethod.ADAPTIVE_GAUSSIAN,
         )
         self._set_analysis_row_visible(
-            self.manual_threshold_control, method == ThresholdMethod.MANUAL
+            self.manual_threshold_low_control, method == ThresholdMethod.MANUAL
+        )
+        self._set_analysis_row_visible(
+            self.manual_threshold_high_control, method == ThresholdMethod.MANUAL
         )
         morphological = (
             self.segmentation_method.currentData()
@@ -1251,7 +1275,8 @@ class MainWindow(QMainWindow):
             gaussian_block_px=gaussian_block,
             sauvola_k=self.sauvola_k.value(),
             gaussian_c=self.gaussian_c.value(),
-            manual_threshold=self.manual_threshold.value(),
+            manual_threshold_low=self.manual_threshold_low.value(),
+            manual_threshold_high=self.manual_threshold_high.value(),
             gaussian_blur_sigma=self.gaussian_blur_sigma.value(),
             fill_holes=self.fill_holes.isChecked(),
             open_radius_px=self.open_radius.value(),
@@ -1797,12 +1822,17 @@ class MainWindow(QMainWindow):
         bgr = np.rint(np.median(sample.reshape(-1, 3), axis=0)).astype(np.uint8)
         blue, green, red = (int(value) for value in bgr)
         target = self.eyedropper_target.currentData()
-        if target == "threshold":
+        if target in {"threshold_low", "threshold_high"}:
             sampled_channel = to_gray(sample, self.channel.currentData())
             threshold = round(float(np.median(sampled_channel)))
-            self.manual_threshold.setValue(threshold)
+            if target == "threshold_low":
+                self.manual_threshold_low.setValue(threshold)
+                bound = "lower"
+            else:
+                self.manual_threshold_high.setValue(threshold)
+                bound = "upper"
             self.method.setCurrentIndex(self.method.findData(ThresholdMethod.MANUAL))
-            detail = f"manual threshold {threshold}"
+            detail = f"manual {bound} threshold {threshold}"
         else:
             class_id = (
                 self.binary_class.currentData()
@@ -2289,7 +2319,8 @@ class MainWindow(QMainWindow):
         self.sauvola_k.setValue(recipe.sauvola_k)
         self.gaussian_block.setValue(recipe.gaussian_block_px)
         self.gaussian_c.setValue(recipe.gaussian_c)
-        self.manual_threshold.setValue(round(recipe.manual_threshold))
+        self.manual_threshold_low.setValue(recipe.manual_threshold_low)
+        self.manual_threshold_high.setValue(recipe.manual_threshold_high)
         self.gaussian_blur_sigma.setValue(recipe.gaussian_blur_sigma)
         self.fill_holes.setChecked(recipe.fill_holes)
         self.ball_radius.setValue(recipe.rolling_ball_radius_px)
