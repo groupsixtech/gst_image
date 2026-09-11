@@ -27,6 +27,8 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QScrollArea,
+    QSlider,
     QSpinBox,
     QTableWidget,
     QTableWidgetItem,
@@ -50,13 +52,20 @@ from gst_image.analysis.groups import particle_group_summary
 from gst_image.analysis.particles import merge_particle_labels, split_particle_by_line
 from gst_image.analysis.preprocess import to_gray
 from gst_image.export import export_analysis
-from gst_image.image_io import load_image, load_preview, sha256_file
+from gst_image.image_io import (
+    load_image,
+    load_region,
+    load_scaled_image,
+    sha256_file,
+)
 from gst_image.models import (
     ROI,
     AnalysisRun,
     Calibration,
     ClassDefinition,
     EditEvent,
+    MorphologicalGradient,
+    MorphologicalInput,
     ParticleGroup,
     ParticlePolarity,
     Point,
@@ -64,6 +73,7 @@ from gst_image.models import (
     RegionClassifierRecipe,
     ROIKind,
     SegmentationLayer,
+    SegmentationMethod,
     SegmentationRecipe,
     ThresholdMethod,
     TrainingStroke,
@@ -80,7 +90,8 @@ from gst_image_app.workers import FunctionWorker
 
 
 def _analyze_source(path, rois, include_ids, recipe, calibration, *, progress, cancelled):
-    gray = load_image(path)
+    source = load_image(path, color=recipe.channel != "gray")
+    gray = to_gray(source, recipe.channel)
     progress(0.01, "Building specimen mask")
     specimen = suggest_specimen_mask(gray)
     domain = build_analysis_mask(
@@ -90,7 +101,7 @@ def _analyze_source(path, rois, include_ids, recipe, calibration, *, progress, c
         set(include_ids),
     )
     result = segment_particles(
-        gray,
+        source,
         domain,
         recipe,
         calibration,
@@ -126,6 +137,7 @@ def _analyze_preview(
             "rolling_ball_radius_px": max(3, round(recipe.rolling_ball_radius_px * scale)),
             "sauvola_window_px": odd_scaled(recipe.sauvola_window_px),
             "gaussian_block_px": odd_scaled(recipe.gaussian_block_px),
+            "gaussian_blur_sigma": recipe.gaussian_blur_sigma * scale,
             "open_radius_px": max(0, round(recipe.open_radius_px * scale)),
             "close_radius_px": max(0, round(recipe.close_radius_px * scale)),
             "min_particle_area_px": max(0, round(recipe.min_particle_area_px * scale**2)),
@@ -136,6 +148,9 @@ def _analyze_preview(
             ),
             "watershed_min_distance_px": max(
                 1, round(recipe.watershed_min_distance_px * scale)
+            ),
+            "morphological_gradient_radius_px": max(
+                1, round(recipe.morphological_gradient_radius_px * scale)
             ),
             "tile_size_px": max(256, round(recipe.tile_size_px * scale)),
         }
@@ -169,6 +184,42 @@ def _analyze_preview(
         domain,
         scaled_recipe,
         preview_calibration,
+        progress=progress,
+        cancelled=cancelled,
+    )
+
+
+def _analyze_region_preview(
+    region,
+    bounds,
+    rois,
+    include_ids,
+    recipe,
+    calibration,
+    *,
+    progress,
+    cancelled,
+):
+    """Analyze a selected source ROI at its independently selected resolution."""
+    left, top, right, bottom = bounds
+    local_rois = [
+        roi.model_copy(
+            update={
+                "points": [
+                    Point(x=point.x - left, y=point.y - top) for point in roi.points
+                ]
+            }
+        )
+        for roi in rois
+    ]
+    progress(0.005, "Preparing selected-ROI preview")
+    return _analyze_preview(
+        region,
+        (right - left, bottom - top),
+        local_rois,
+        include_ids,
+        recipe,
+        calibration,
         progress=progress,
         cancelled=cancelled,
     )
@@ -263,6 +314,31 @@ class RegionPaintCommand(QUndoCommand):
         self.window._commit_region_edit()
 
 
+def _slider_control(spinbox: QSpinBox | QDoubleSpinBox) -> tuple[QWidget, QSlider]:
+    """Pair a precise spin box with a quickly adjustable horizontal slider."""
+    control = QWidget()
+    layout = QHBoxLayout(control)
+    layout.setContentsMargins(0, 0, 0, 0)
+    slider = QSlider(Qt.Orientation.Horizontal)
+    if isinstance(spinbox, QDoubleSpinBox):
+        scale = 10**spinbox.decimals()
+        slider.setRange(round(spinbox.minimum() * scale), round(spinbox.maximum() * scale))
+        slider.setSingleStep(max(1, round(spinbox.singleStep() * scale)))
+        slider.valueChanged.connect(lambda value: spinbox.setValue(value / scale))
+        spinbox.valueChanged.connect(lambda value: slider.setValue(round(value * scale)))
+        slider.setValue(round(spinbox.value() * scale))
+    else:
+        slider.setRange(spinbox.minimum(), spinbox.maximum())
+        slider.setSingleStep(spinbox.singleStep())
+        slider.setPageStep(max(spinbox.singleStep(), (spinbox.maximum() - spinbox.minimum()) // 20))
+        slider.valueChanged.connect(spinbox.setValue)
+        spinbox.valueChanged.connect(slider.setValue)
+        slider.setValue(spinbox.value())
+    layout.addWidget(slider, 1)
+    layout.addWidget(spinbox)
+    return control, slider
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -276,6 +352,8 @@ class MainWindow(QMainWindow):
         self.current_path: Path | None = None
         self.current_project: Path | None = None
         self.preview_bgr: np.ndarray | None = None
+        self.display_region_bgr: np.ndarray | None = None
+        self.display_region_bounds: tuple[int, int, int, int] | None = None
         self.gray: np.ndarray | None = None
         self.analysis_mask: np.ndarray | None = None
         self.current_mask: np.ndarray | None = None
@@ -288,6 +366,12 @@ class MainWindow(QMainWindow):
         self.selected_labels: set[int] = set()
         self.run_scope_ids: list[str] = []
         self.run_recipe: SegmentationRecipe | None = None
+        self.confirmed_preview_recipe: SegmentationRecipe | None = None
+        self.confirmed_preview_scope_ids: list[str] = []
+        self._pending_preview_recipe: SegmentationRecipe | None = None
+        self._pending_preview_scope_ids: list[str] = []
+        self._pending_preview_full_resolution = False
+        self._pending_preview_resolution: int | None = None
         self.dirty = False
         self._build_actions()
         self._build_analysis_dock()
@@ -336,6 +420,7 @@ class MainWindow(QMainWindow):
             ("Select", "select"),
             ("Calibrate", "calibrate"),
             ("Measure", "measure"),
+            ("Eyedropper", "eyedropper"),
             ("Include box", "include"),
             ("Analysis box", "analysis_box"),
             ("Exclude box", "exclude"),
@@ -365,7 +450,24 @@ class MainWindow(QMainWindow):
         panel = QWidget()
         layout = QVBoxLayout(panel)
         form = QFormLayout()
+        self.analysis_form = form
         self.binary_class = QComboBox()
+        self.channel = QComboBox()
+        for label, value in (
+            ("Grayscale", "gray"),
+            ("Blue", "blue"),
+            ("Green", "green"),
+            ("Red", "red"),
+            ("Lab lightness", "lab_l"),
+            ("Lab a", "lab_a"),
+            ("Lab b", "lab_b"),
+        ):
+            self.channel.addItem(label, value)
+        self.segmentation_method = QComboBox()
+        self.segmentation_method.addItem("Threshold particles", SegmentationMethod.THRESHOLD)
+        self.segmentation_method.addItem(
+            "Morphological watershed", SegmentationMethod.MORPHOLOGICAL_WATERSHED
+        )
         self.method = QComboBox()
         for method in ThresholdMethod:
             self.method.addItem(method.value.replace("_", " ").title(), method)
@@ -377,6 +479,27 @@ class MainWindow(QMainWindow):
         self.split_touching = QCheckBox("Watershed split touching particles")
         self.split_touching.setChecked(True)
         self.selected_roi_only = QCheckBox("Analyze selected ROI/box only")
+        self.overview_resolution = QSpinBox()
+        self.overview_resolution.setRange(0, 100)
+        self.overview_resolution.setSuffix("%")
+        self.overview_resolution.setValue(25)
+        self.overview_resolution.setToolTip(
+            "Percentage of native width and height; 100% loads the full overview."
+        )
+        self.roi_resolution = QSpinBox()
+        self.roi_resolution.setRange(0, 100)
+        self.roi_resolution.setSuffix("%")
+        self.roi_resolution.setValue(100)
+        self.roi_resolution.setToolTip(
+            "Independent resolution for the selected Include/Analysis ROI."
+        )
+        self.preview_resolution = QComboBox()
+        self.preview_resolution.addItem("Fast overview", "overview")
+        self.preview_resolution.addItem("Selected ROI at full resolution", "roi_full")
+        self.eyedropper_target = QComboBox()
+        self.eyedropper_target.addItem("Manual threshold", "threshold")
+        self.eyedropper_target.addItem("Segmentation class color", "binary_color")
+        self.eyedropper_target.addItem("Region class color", "region_color")
         self.window_size = QSpinBox()
         self.window_size.setRange(3, 2001)
         self.window_size.setSingleStep(2)
@@ -384,13 +507,38 @@ class MainWindow(QMainWindow):
         self.sauvola_k = QDoubleSpinBox()
         self.sauvola_k.setRange(-1, 1)
         self.sauvola_k.setDecimals(3)
+        self.sauvola_k.setSingleStep(0.01)
         self.sauvola_k.setValue(0.2)
+        self.gaussian_block = QSpinBox()
+        self.gaussian_block.setRange(3, 2001)
+        self.gaussian_block.setSingleStep(2)
+        self.gaussian_block.setValue(101)
+        self.gaussian_c = QDoubleSpinBox()
+        self.gaussian_c.setRange(-255, 255)
+        self.gaussian_c.setDecimals(2)
+        self.gaussian_c.setSingleStep(0.5)
+        self.gaussian_c.setValue(2.0)
         self.manual_threshold = QSpinBox()
         self.manual_threshold.setRange(0, 255)
         self.manual_threshold.setValue(128)
+        self.gaussian_blur_sigma = QDoubleSpinBox()
+        self.gaussian_blur_sigma.setRange(0, 20)
+        self.gaussian_blur_sigma.setDecimals(2)
+        self.gaussian_blur_sigma.setSingleStep(0.1)
+        self.gaussian_blur_sigma.setValue(0.8)
+        self.fill_holes = QCheckBox("Flood-fill enclosed holes")
+        self.fill_holes.setToolTip(
+            "Fill background regions that cannot be reached from the analysis-domain border."
+        )
         self.ball_radius = QSpinBox()
         self.ball_radius.setRange(3, 10001)
         self.ball_radius.setValue(151)
+        self.open_radius = QSpinBox()
+        self.open_radius.setRange(0, 500)
+        self.open_radius.setValue(1)
+        self.close_radius = QSpinBox()
+        self.close_radius.setRange(0, 500)
+        self.close_radius.setValue(1)
         self.min_area = QSpinBox()
         self.min_area.setRange(0, 10_000_000)
         self.min_area.setValue(25)
@@ -401,28 +549,120 @@ class MainWindow(QMainWindow):
         self.tile_size.setRange(256, 8192)
         self.tile_size.setSingleStep(256)
         self.tile_size.setValue(2048)
+        self.watershed_distance = QSpinBox()
+        self.watershed_distance.setRange(1, 1000)
+        self.watershed_distance.setValue(7)
+        self.morphological_input = QComboBox()
+        self.morphological_input.addItem("Object image", MorphologicalInput.OBJECT)
+        self.morphological_input.addItem("Border image", MorphologicalInput.BORDER)
+        self.morphological_gradient = QComboBox()
+        self.morphological_gradient.addItem(
+            "Morphological", MorphologicalGradient.MORPHOLOGICAL
+        )
+        self.morphological_gradient.addItem("Internal", MorphologicalGradient.INTERNAL)
+        self.morphological_gradient.addItem("External", MorphologicalGradient.EXTERNAL)
+        self.morphological_gradient_radius = QSpinBox()
+        self.morphological_gradient_radius.setRange(1, 100)
+        self.morphological_gradient_radius.setValue(1)
+        self.morphological_tolerance = QSpinBox()
+        self.morphological_tolerance.setRange(1, 255)
+        self.morphological_tolerance.setValue(10)
+        self.morphological_tolerance.setToolTip(
+            "Extended-minima depth; higher values merge shallow basins into fewer segments."
+        )
+        self.morphological_connectivity = QComboBox()
+        self.morphological_connectivity.addItem("4-connected", 4)
+        self.morphological_connectivity.addItem("8-connected", 8)
+        self.morphological_calculate_dams = QCheckBox("Calculate watershed dams")
+        self.morphological_calculate_dams.setChecked(True)
         self.brush_radius = QSpinBox()
         self.brush_radius.setRange(1, 500)
         self.brush_radius.setValue(12)
         form.addRow("Segmentation class", self.binary_class)
+        form.addRow("Analysis channel", self.channel)
+        form.addRow("Segmentation method", self.segmentation_method)
         form.addRow("Threshold method", self.method)
         form.addRow("Particle polarity", self.polarity)
-        form.addRow("Local window (px)", self.window_size)
-        form.addRow("Sauvola k", self.sauvola_k)
-        form.addRow("Manual threshold", self.manual_threshold)
-        form.addRow("Background radius (px)", self.ball_radius)
-        form.addRow("Minimum area (px²)", self.min_area)
-        form.addRow("Maximum area (px²)", self.max_area)
-        form.addRow("Tile size (px)", self.tile_size)
-        form.addRow("Brush radius (px)", self.brush_radius)
+        overview_control, self.overview_resolution_slider = _slider_control(
+            self.overview_resolution
+        )
+        roi_resolution_control, self.roi_resolution_slider = _slider_control(
+            self.roi_resolution
+        )
+        form.addRow("Overview resolution", overview_control)
+        form.addRow("Selected ROI resolution", roi_resolution_control)
+        form.addRow("Preview resolution", self.preview_resolution)
+        form.addRow("Eyedropper sets", self.eyedropper_target)
+        self.sauvola_window_control, self.window_size_slider = _slider_control(
+            self.window_size
+        )
+        self.sauvola_k_control, self.sauvola_k_slider = _slider_control(self.sauvola_k)
+        self.gaussian_block_control, self.gaussian_block_slider = _slider_control(
+            self.gaussian_block
+        )
+        self.gaussian_c_control, self.gaussian_c_slider = _slider_control(self.gaussian_c)
+        self.manual_threshold_control, self.manual_threshold_slider = _slider_control(
+            self.manual_threshold
+        )
+        self.gaussian_blur_control, self.gaussian_blur_sigma_slider = _slider_control(
+            self.gaussian_blur_sigma
+        )
+        self.ball_radius_control, self.ball_radius_slider = _slider_control(self.ball_radius)
+        open_control, self.open_radius_slider = _slider_control(self.open_radius)
+        close_control, self.close_radius_slider = _slider_control(self.close_radius)
+        min_area_control, self.min_area_slider = _slider_control(self.min_area)
+        max_area_control, self.max_area_slider = _slider_control(self.max_area)
+        self.watershed_distance_control, self.watershed_distance_slider = _slider_control(
+            self.watershed_distance
+        )
+        self.morphological_gradient_control, self.morphological_gradient_slider = (
+            _slider_control(self.morphological_gradient_radius)
+        )
+        self.morphological_tolerance_control, self.morphological_tolerance_slider = (
+            _slider_control(self.morphological_tolerance)
+        )
+        tile_control, self.tile_size_slider = _slider_control(self.tile_size)
+        brush_control, self.brush_radius_slider = _slider_control(self.brush_radius)
+        form.addRow("Sauvola window (px)", self.sauvola_window_control)
+        form.addRow("Sauvola k", self.sauvola_k_control)
+        form.addRow("Adaptive block size (px)", self.gaussian_block_control)
+        form.addRow("Adaptive constant C", self.gaussian_c_control)
+        form.addRow("Manual threshold", self.manual_threshold_control)
+        form.addRow("Morphological input", self.morphological_input)
+        form.addRow("Gradient type", self.morphological_gradient)
+        form.addRow("Morphological gradient radius (px)", self.morphological_gradient_control)
+        form.addRow("Morphological tolerance", self.morphological_tolerance_control)
+        form.addRow("Morphological connectivity", self.morphological_connectivity)
+        form.addRow(self.morphological_calculate_dams)
+        form.addRow("Gaussian pre-blur sigma (px)", self.gaussian_blur_control)
+        form.addRow(self.illumination)
+        form.addRow("Background radius (px)", self.ball_radius_control)
+        form.addRow("Opening radius (px)", open_control)
+        form.addRow("Closing radius (px)", close_control)
+        form.addRow(self.fill_holes)
+        form.addRow("Minimum area (px²)", min_area_control)
+        form.addRow("Maximum area (px²)", max_area_control)
+        form.addRow(self.split_touching)
+        form.addRow("Watershed minimum distance (px)", self.watershed_distance_control)
+        form.addRow("Tile size (px)", tile_control)
+        form.addRow("Brush radius (px)", brush_control)
         layout.addLayout(form)
-        layout.addWidget(self.illumination)
-        layout.addWidget(self.split_touching)
         layout.addWidget(self.selected_roi_only)
+        self.restore_defaults_button = QPushButton("Restore analysis defaults")
+        self.restore_defaults_button.clicked.connect(self.restore_analysis_defaults)
+        layout.addWidget(self.restore_defaults_button)
+        display_row = QHBoxLayout()
+        self.full_resolution_button = QPushButton("Show selected ROI")
+        self.full_resolution_button.clicked.connect(self.show_full_resolution_roi)
+        self.overview_button = QPushButton("Show overview")
+        self.overview_button.clicked.connect(self.show_overview)
+        display_row.addWidget(self.full_resolution_button)
+        display_row.addWidget(self.overview_button)
+        layout.addLayout(display_row)
         row = QHBoxLayout()
         self.preview_button = QPushButton("Preview")
         self.preview_button.clicked.connect(self.run_preview_segmentation)
-        self.run_button = QPushButton("Run particles")
+        self.run_button = QPushButton("Run particles — full resolution")
         self.run_button.clicked.connect(self.run_segmentation)
         self.cancel_button = QPushButton("Cancel")
         self.cancel_button.setEnabled(False)
@@ -431,9 +671,63 @@ class MainWindow(QMainWindow):
         row.addWidget(self.run_button)
         row.addWidget(self.cancel_button)
         layout.addLayout(row)
+        self.preview_status = QLabel("Preview parameters not confirmed")
+        self.preview_status.setWordWrap(True)
+        layout.addWidget(self.preview_status)
         self.progress = QProgressBar()
         self.progress.setRange(0, 1000)
         layout.addWidget(self.progress)
+        for control in (
+            self.binary_class,
+            self.channel,
+            self.segmentation_method,
+            self.method,
+            self.polarity,
+            self.overview_resolution,
+            self.roi_resolution,
+            self.preview_resolution,
+            self.illumination,
+            self.split_touching,
+            self.selected_roi_only,
+            self.window_size,
+            self.sauvola_k,
+            self.gaussian_block,
+            self.gaussian_c,
+            self.manual_threshold,
+            self.gaussian_blur_sigma,
+            self.fill_holes,
+            self.ball_radius,
+            self.open_radius,
+            self.close_radius,
+            self.min_area,
+            self.max_area,
+            self.watershed_distance,
+            self.morphological_input,
+            self.morphological_gradient,
+            self.morphological_gradient_radius,
+            self.morphological_tolerance,
+            self.morphological_connectivity,
+            self.morphological_calculate_dams,
+            self.tile_size,
+        ):
+            signal = (
+                control.toggled
+                if isinstance(control, QCheckBox)
+                else control.currentIndexChanged
+                if isinstance(control, QComboBox)
+                else control.valueChanged
+            )
+            signal.connect(self._invalidate_preview_confirmation)
+        self.method.currentIndexChanged.connect(self._update_analysis_parameter_visibility)
+        self.segmentation_method.currentIndexChanged.connect(
+            self._update_analysis_parameter_visibility
+        )
+        self.morphological_input.currentIndexChanged.connect(
+            self._update_analysis_parameter_visibility
+        )
+        self.illumination.toggled.connect(self._update_analysis_parameter_visibility)
+        self.split_touching.toggled.connect(self._update_analysis_parameter_visibility)
+        self._update_analysis_parameter_visibility()
         layout.addWidget(QLabel("Assisted region classes"))
         self.seed_class = QComboBox()
         layout.addWidget(self.seed_class)
@@ -449,7 +743,10 @@ class MainWindow(QMainWindow):
         self.train_regions_button.clicked.connect(self.train_regions)
         layout.addWidget(self.train_regions_button)
         layout.addStretch(1)
-        dock.setWidget(panel)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(panel)
+        dock.setWidget(scroll)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dock)
 
     def _build_results_dock(self) -> None:
@@ -469,9 +766,13 @@ class MainWindow(QMainWindow):
         layer_panel = QWidget()
         layer_layout = QVBoxLayout(layer_panel)
         self.layers_list = QListWidget()
+        self.layers_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.layers_list.itemClicked.connect(self.show_selected_layer)
         self.layers_list.itemChanged.connect(self._layer_visibility_changed)
         layer_layout.addWidget(self.layers_list)
+        self.delete_layers_button = QPushButton("Delete selected")
+        self.delete_layers_button.clicked.connect(self.delete_selected_layers)
+        layer_layout.addWidget(self.delete_layers_button)
         self.layer_opacity = QDoubleSpinBox()
         self.layer_opacity.setRange(0, 1)
         self.layer_opacity.setSingleStep(0.05)
@@ -480,14 +781,30 @@ class MainWindow(QMainWindow):
         layer_layout.addWidget(QLabel("Selected layer opacity"))
         layer_layout.addWidget(self.layer_opacity)
         tabs.addTab(layer_panel, "Layers")
+        roi_panel = QWidget()
+        roi_layout = QVBoxLayout(roi_panel)
         self.rois_list = QListWidget()
+        self.rois_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.rois_list.itemClicked.connect(self._roi_selected)
-        tabs.addTab(self.rois_list, "ROIs")
+        self.rois_list.itemSelectionChanged.connect(self._invalidate_preview_confirmation)
+        roi_layout.addWidget(self.rois_list)
+        self.delete_rois_button = QPushButton("Delete selected")
+        self.delete_rois_button.clicked.connect(self.delete_selected_rois)
+        roi_layout.addWidget(self.delete_rois_button)
+        tabs.addTab(roi_panel, "ROIs")
+        measurement_panel = QWidget()
+        measurement_layout = QVBoxLayout(measurement_panel)
         self.measurements_list = QListWidget()
-        tabs.addTab(self.measurements_list, "Measurements")
+        self.measurements_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        measurement_layout.addWidget(self.measurements_list)
+        self.delete_measurements_button = QPushButton("Delete selected")
+        self.delete_measurements_button.clicked.connect(self.delete_selected_measurements)
+        measurement_layout.addWidget(self.delete_measurements_button)
+        tabs.addTab(measurement_panel, "Measurements")
         group_panel = QWidget()
         group_layout = QVBoxLayout(group_panel)
         self.groups_table = QTableWidget(0, 5)
+        self.groups_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.groups_table.setHorizontalHeaderLabels(
             ["Name", "Min radius", "Max radius", "Min circularity", "Max circularity"]
         )
@@ -499,9 +816,12 @@ class MainWindow(QMainWindow):
         apply_groups.clicked.connect(self.apply_groups)
         plot_groups = QPushButton("Plot")
         plot_groups.clicked.connect(self.plot_particles)
+        delete_groups = QPushButton("Delete selected")
+        delete_groups.clicked.connect(self.delete_selected_groups)
         buttons.addWidget(add_group)
         buttons.addWidget(apply_groups)
         buttons.addWidget(plot_groups)
+        buttons.addWidget(delete_groups)
         group_layout.addLayout(buttons)
         tabs.addTab(group_panel, "Groups")
         dock.setWidget(tabs)
@@ -522,6 +842,174 @@ class MainWindow(QMainWindow):
         suffix = " *" if dirty else ""
         self.setWindowTitle(f"GST Image — Weld Microstructure Analysis{suffix}")
 
+    def _invalidate_preview_confirmation(self, *_args) -> None:
+        self.confirmed_preview_recipe = None
+        self.confirmed_preview_scope_ids = []
+        if hasattr(self, "preview_status"):
+            self.preview_status.setText("Preview parameters not confirmed")
+
+    def _set_analysis_row_visible(self, field: QWidget, visible: bool) -> None:
+        field.setVisible(visible)
+        label = self.analysis_form.labelForField(field)
+        if label is not None:
+            label.setVisible(visible)
+
+    def _update_analysis_parameter_visibility(self, *_args) -> None:
+        """Show only controls used by the active thresholding configuration."""
+        method = self.method.currentData()
+        self._set_analysis_row_visible(
+            self.sauvola_window_control, method == ThresholdMethod.SAUVOLA
+        )
+        self._set_analysis_row_visible(
+            self.sauvola_k_control, method == ThresholdMethod.SAUVOLA
+        )
+        self._set_analysis_row_visible(
+            self.gaussian_block_control,
+            method == ThresholdMethod.ADAPTIVE_GAUSSIAN,
+        )
+        self._set_analysis_row_visible(
+            self.gaussian_c_control,
+            method == ThresholdMethod.ADAPTIVE_GAUSSIAN,
+        )
+        self._set_analysis_row_visible(
+            self.manual_threshold_control, method == ThresholdMethod.MANUAL
+        )
+        morphological = (
+            self.segmentation_method.currentData()
+            == SegmentationMethod.MORPHOLOGICAL_WATERSHED
+        )
+        self._set_analysis_row_visible(self.morphological_input, morphological)
+        self._set_analysis_row_visible(
+            self.morphological_gradient,
+            morphological and self.morphological_input.currentData() == MorphologicalInput.OBJECT,
+        )
+        self._set_analysis_row_visible(
+            self.morphological_gradient_control,
+            morphological and self.morphological_input.currentData() == MorphologicalInput.OBJECT,
+        )
+        self._set_analysis_row_visible(self.morphological_tolerance_control, morphological)
+        self._set_analysis_row_visible(self.morphological_connectivity, morphological)
+        self.morphological_calculate_dams.setVisible(morphological)
+        self._set_analysis_row_visible(
+            self.ball_radius_control, self.illumination.isChecked()
+        )
+        self.split_touching.setVisible(not morphological)
+        self._set_analysis_row_visible(
+            self.watershed_distance_control,
+            not morphological and self.split_touching.isChecked(),
+        )
+
+    def restore_analysis_defaults(self) -> None:
+        """Restore every analysis and preview control to its application default."""
+        defaults = SegmentationRecipe()
+        self._set_recipe_controls(defaults)
+        if self.manifest is not None:
+            particle_class = next(
+                (item for item in self.manifest.classes if item.preset == "particle"), None
+            )
+            if particle_class is not None:
+                self.binary_class.setCurrentIndex(
+                    self.binary_class.findData(particle_class.id)
+                )
+        self.overview_resolution.setValue(25)
+        self.roi_resolution.setValue(100)
+        self.preview_resolution.setCurrentIndex(0)
+        self.eyedropper_target.setCurrentIndex(0)
+        self.selected_roi_only.setChecked(False)
+        self.brush_radius.setValue(12)
+        self._invalidate_preview_confirmation()
+        self.statusBar().showMessage("Analysis parameters restored to defaults", 4000)
+
+    def _selected_full_resolution_roi(self) -> ROI | None:
+        if self.manifest is None:
+            return None
+        selected_ids = {
+            item.data(Qt.ItemDataRole.UserRole) for item in self.rois_list.selectedItems()
+        }
+        if len(selected_ids) != 1:
+            return None
+        candidates = [
+            roi
+            for roi in self.manifest.rois
+            if roi.id in selected_ids
+            and roi.kind in {ROIKind.INCLUDE, ROIKind.ANALYSIS_BOX}
+        ]
+        return candidates[0] if len(candidates) == 1 else None
+
+    def _roi_bounds(self, roi: ROI) -> tuple[int, int, int, int]:
+        xs = [point.x for point in roi.points]
+        ys = [point.y for point in roi.points]
+        left = min(self.manifest.image_width - 1, max(0, int(np.floor(min(xs)))))
+        top = min(self.manifest.image_height - 1, max(0, int(np.floor(min(ys)))))
+        right = min(self.manifest.image_width, int(np.ceil(max(xs))) + 1)
+        bottom = min(self.manifest.image_height, int(np.ceil(max(ys))) + 1)
+        return left, top, max(left + 1, right), max(top + 1, bottom)
+
+    def _set_canvas_image(
+        self,
+        image: np.ndarray,
+        source_rect: tuple[int, int, int, int] | None = None,
+    ) -> None:
+        if self.manifest is None:
+            return
+        full_size = (self.manifest.image_width, self.manifest.image_height)
+        self.canvas.set_image(image, full_size, source_rect)
+        self.canvas.set_roi_outlines([self._roi_polygon(roi) for roi in self.manifest.rois])
+        self._refresh_measurements()
+        self._render_visible_layers()
+
+    def show_overview(self) -> bool:
+        if self.current_path is not None and self.current_path.exists():
+            try:
+                preview, _ = load_scaled_image(
+                    self.current_path,
+                    self.overview_resolution.value(),
+                    color=True,
+                )
+            except Exception as error:
+                QMessageBox.critical(self, "Overview failed", str(error))
+                return False
+            self.preview_bgr = preview
+            self.training_labels = np.zeros(preview.shape[:2], dtype=np.uint16)
+            self._restore_training_strokes()
+        if self.preview_bgr is None:
+            return False
+        self.display_region_bgr = None
+        self.display_region_bounds = None
+        self._set_canvas_image(self.preview_bgr)
+        self.statusBar().showMessage(
+            f"Showing overview at {self.overview_resolution.value()}% resolution ")
+        return True
+
+    def show_full_resolution_roi(self) -> bool:
+        roi = self._selected_full_resolution_roi()
+        if roi is None or self.current_path is None or not self.current_path.exists():
+            QMessageBox.information(
+                self,
+                "Full-resolution view",
+                "Select exactly one Include or Analysis box first.",
+            )
+            return False
+        try:
+            image, bounds = load_region(
+                self.current_path,
+                self._roi_bounds(roi),
+                color=True,
+                scale_percent=self.roi_resolution.value(),
+            )
+        except Exception as error:
+            QMessageBox.critical(self, "Full-resolution view failed", str(error))
+            return False
+        self.display_region_bgr = image
+        self.display_region_bounds = bounds
+        self._set_canvas_image(image, bounds)
+        self.statusBar().showMessage(
+            f"Showing {image.shape[1]} × {image.shape[0]} ROI pixels "
+            f"at {self.roi_resolution.value()}% resolution",
+            5000,
+        )
+        return True
+
     def open_image(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self,
@@ -534,7 +1022,9 @@ class MainWindow(QMainWindow):
 
     def _load_new_image(self, path: Path) -> None:
         try:
-            preview, full_size = load_preview(path)
+            preview, full_size = load_scaled_image(
+                path, self.overview_resolution.value(), color=True
+            )
             digest = sha256_file(path)
         except Exception as error:
             QMessageBox.critical(self, "Open failed", str(error))
@@ -542,6 +1032,8 @@ class MainWindow(QMainWindow):
         self.current_path = path.resolve()
         self.current_project = None
         self.preview_bgr = preview
+        self.display_region_bgr = None
+        self.display_region_bounds = None
         self.gray = None
         self.analysis_mask = None
         self.current_mask = None
@@ -560,7 +1052,7 @@ class MainWindow(QMainWindow):
         )
         self.training_labels = np.zeros(preview.shape[:2], dtype=np.uint16)
         self.run_scope_ids = []
-        self.canvas.set_image(preview, full_size)
+        self._set_canvas_image(preview)
         self._refresh_all()
         self._set_dirty(True)
 
@@ -573,14 +1065,15 @@ class MainWindow(QMainWindow):
             source = resolve_source(path, manifest)
             issues = validate_project(path)
             if source.exists():
-                preview, full_size = load_preview(source)
+                preview, _ = load_scaled_image(
+                    source, self.overview_resolution.value(), color=True
+                )
             else:
                 preview = cv2.imread(str(Path(path) / "previews" / "source.jpg"))
                 if preview is None:
                     raise FileNotFoundError(
                         "Source image and saved project thumbnail are both missing"
                     )
-                full_size = (manifest.image_width, manifest.image_height)
         except Exception as error:
             QMessageBox.critical(self, "Open failed", str(error))
             return
@@ -591,9 +1084,16 @@ class MainWindow(QMainWindow):
         self.manifest = manifest
         self.layer_masks = masks
         self.preview_bgr = preview
+        self.display_region_bgr = None
+        self.display_region_bounds = None
         self.gray = None
         self.analysis_mask = None
-        self.canvas.set_image(preview, full_size)
+        self.current_mask = None
+        self.current_labels = None
+        self.current_layer_id = None
+        self.particles = []
+        self.selected_labels.clear()
+        self._set_canvas_image(preview)
         particle_layer = next((layer for layer in manifest.layers if layer.kind == "instances"), None)
         if particle_layer and particle_layer.id in masks:
             self.current_layer_id = particle_layer.id
@@ -689,9 +1189,13 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Relink failed", str(error))
 
     def _load_relinked_source(self, path: Path) -> None:
-        preview, full_size = load_preview(path)
+        preview, _ = load_scaled_image(
+            path, self.overview_resolution.value(), color=True
+        )
         self.current_path = path.resolve()
         self.preview_bgr = preview
+        self.display_region_bgr = None
+        self.display_region_bounds = None
         self.gray = None
         self.analysis_mask = None
         self.current_mask = None
@@ -699,7 +1203,7 @@ class MainWindow(QMainWindow):
         self.current_layer_id = None
         self.particles = []
         self.training_labels = np.zeros(preview.shape[:2], dtype=np.uint16)
-        self.canvas.set_image(preview, full_size)
+        self._set_canvas_image(preview)
         self._refresh_all()
         self._set_dirty(True)
 
@@ -726,24 +1230,43 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Exported to {output}", 5000)
 
     def _recipe_from_controls(self) -> SegmentationRecipe:
-        window = self.window_size.value()
-        if window % 2 == 0:
-            window += 1
+        sauvola_window = self.window_size.value()
+        if sauvola_window % 2 == 0:
+            sauvola_window += 1
+            self.window_size.setValue(sauvola_window)
+        gaussian_block = self.gaussian_block.value()
+        if gaussian_block % 2 == 0:
+            gaussian_block += 1
+            self.gaussian_block.setValue(gaussian_block)
         return SegmentationRecipe(
             name="Interactive particle segmentation",
             target_class_id=self.binary_class.currentData(),
+            channel=self.channel.currentData(),
+            segmentation_method=self.segmentation_method.currentData(),
             threshold_method=self.method.currentData(),
             polarity=self.polarity.currentData(),
             illumination_correction=self.illumination.isChecked(),
             rolling_ball_radius_px=self.ball_radius.value(),
-            sauvola_window_px=window,
-            gaussian_block_px=window,
+            sauvola_window_px=sauvola_window,
+            gaussian_block_px=gaussian_block,
             sauvola_k=self.sauvola_k.value(),
+            gaussian_c=self.gaussian_c.value(),
             manual_threshold=self.manual_threshold.value(),
+            gaussian_blur_sigma=self.gaussian_blur_sigma.value(),
+            fill_holes=self.fill_holes.isChecked(),
+            open_radius_px=self.open_radius.value(),
+            close_radius_px=self.close_radius.value(),
             min_particle_area_px=self.min_area.value(),
             max_particle_area_px=self.max_area.value() or None,
             tile_size_px=self.tile_size.value(),
             split_touching=self.split_touching.isChecked(),
+            watershed_min_distance_px=self.watershed_distance.value(),
+            morphological_input=self.morphological_input.currentData(),
+            morphological_gradient=self.morphological_gradient.currentData(),
+            morphological_gradient_radius_px=self.morphological_gradient_radius.value(),
+            morphological_tolerance=self.morphological_tolerance.value(),
+            morphological_connectivity=self.morphological_connectivity.currentData(),
+            morphological_calculate_dams=self.morphological_calculate_dams.isChecked(),
         )
 
     def run_segmentation(self) -> None:
@@ -763,9 +1286,20 @@ class MainWindow(QMainWindow):
                 "The source SHA-256 no longer matches this project. Relink it as a new source revision before analysis.",
             )
             return
-        recipe = self._recipe_from_controls()
+        control_recipe = self._recipe_from_controls()
         selected = self.rois_list.selectedItems() if self.selected_roi_only.isChecked() else []
         self.run_scope_ids = [item.data(Qt.ItemDataRole.UserRole) for item in selected]
+        confirmed_matches = (
+            self.confirmed_preview_recipe is not None
+            and self.confirmed_preview_scope_ids == self.run_scope_ids
+            and self.confirmed_preview_recipe.model_dump(exclude={"id", "name"})
+            == control_recipe.model_dump(exclude={"id", "name"})
+        )
+        recipe = (
+            self.confirmed_preview_recipe.model_copy()
+            if confirmed_matches
+            else control_recipe
+        )
         if len(self.run_scope_ids) == 1:
             roi = next((item for item in self.manifest.rois if item.id == self.run_scope_ids[0]), None)
             if roi and roi.recipe_id:
@@ -799,37 +1333,131 @@ class MainWindow(QMainWindow):
         self.preview_button.setEnabled(False)
         self.run_button.setEnabled(False)
         self.cancel_button.setEnabled(True)
+        self.preview_status.setText(
+            f"Running original {self.manifest.image_width} × "
+            f"{self.manifest.image_height} pixel source"
+        )
         self.thread_pool.start(self.worker)
 
     def run_preview_segmentation(self) -> None:
         if self.preview_bgr is None or self.manifest is None or self.worker is not None:
             return
-        recipe = self._recipe_from_controls()
-        selected = self.rois_list.selectedItems() if self.selected_roi_only.isChecked() else []
-        scope_ids = [item.data(Qt.ItemDataRole.UserRole) for item in selected]
-        self.worker = FunctionWorker(
-            _analyze_preview,
-            self.preview_bgr.copy(),
-            (self.manifest.image_width, self.manifest.image_height),
-            list(self.manifest.rois),
-            scope_ids,
-            recipe,
-            self.manifest.calibration,
-            with_callbacks=True,
+        selected_roi_preview = self.preview_resolution.currentData() == "roi_full"
+        resolution = (
+            self.roi_resolution.value()
+            if selected_roi_preview
+            else self.overview_resolution.value()
         )
+        if resolution == 0:
+            QMessageBox.information(
+                self,
+                "Preview resolution",
+                "Choose a resolution above 0% before running segmentation preview.",
+            )
+            return
+        if selected_roi_preview:
+            roi = self._selected_full_resolution_roi()
+            if roi is None:
+                QMessageBox.information(
+                    self,
+                    "Selected-ROI preview",
+                    "Select exactly one Include or Analysis box first.",
+                )
+                return
+            self.selected_roi_only.setChecked(True)
+            scope_ids = [roi.id]
+            if not self.show_full_resolution_roi():
+                return
+        else:
+            selected = self.rois_list.selectedItems() if self.selected_roi_only.isChecked() else []
+            scope_ids = [item.data(Qt.ItemDataRole.UserRole) for item in selected]
+            if not self.show_overview():
+                return
+        recipe = self._recipe_from_controls()
+        self._pending_preview_recipe = recipe.model_copy()
+        self._pending_preview_scope_ids = list(scope_ids)
+        self._pending_preview_full_resolution = selected_roi_preview
+        self._pending_preview_resolution = resolution
+        if selected_roi_preview:
+            self.worker = FunctionWorker(
+                _analyze_region_preview,
+                self.display_region_bgr.copy(),
+                self.display_region_bounds,
+                list(self.manifest.rois),
+                scope_ids,
+                recipe,
+                self.manifest.calibration,
+                with_callbacks=True,
+            )
+        else:
+            self.worker = FunctionWorker(
+                _analyze_preview,
+                self.preview_bgr.copy(),
+                (self.manifest.image_width, self.manifest.image_height),
+                list(self.manifest.rois),
+                scope_ids,
+                recipe,
+                self.manifest.calibration,
+                with_callbacks=True,
+            )
         self.worker.signals.progress.connect(self._progress)
         self.worker.signals.result.connect(self._preview_result)
         self.worker.signals.error.connect(self._worker_error)
         self.worker.signals.finished.connect(self._worker_finished)
         self.preview_button.setEnabled(False)
         self.run_button.setEnabled(False)
+        self.full_resolution_button.setEnabled(False)
+        self.overview_button.setEnabled(False)
         self.cancel_button.setEnabled(True)
         self.thread_pool.start(self.worker)
 
     def _preview_result(self, result) -> None:
         self.canvas.set_mask_overlay(result.mask)
-        self._show_summary({"mode": "Preview only — not saved", **result.summary})
-        self.statusBar().showMessage("Preview complete; run full analysis to save results", 6000)
+        pending_recipe = self._pending_preview_recipe
+        pending_scope_ids = list(self._pending_preview_scope_ids)
+        was_full_resolution = self._pending_preview_full_resolution
+        pending_resolution = self._pending_preview_resolution
+        current_recipe = self._recipe_from_controls()
+        selected = self.rois_list.selectedItems() if self.selected_roi_only.isChecked() else []
+        current_scope_ids = [item.data(Qt.ItemDataRole.UserRole) for item in selected]
+        unchanged = (
+            pending_recipe is not None
+            and pending_scope_ids == current_scope_ids
+            and pending_resolution
+            == (
+                self.roi_resolution.value()
+                if was_full_resolution
+                else self.overview_resolution.value()
+            )
+            and pending_recipe.model_dump(exclude={"id", "name"})
+            == current_recipe.model_dump(exclude={"id", "name"})
+        )
+        if unchanged:
+            self.confirmed_preview_recipe = pending_recipe
+            self.confirmed_preview_scope_ids = pending_scope_ids
+        else:
+            self.confirmed_preview_recipe = None
+            self.confirmed_preview_scope_ids = []
+        self._pending_preview_recipe = None
+        self._pending_preview_scope_ids = []
+        self._pending_preview_full_resolution = False
+        self._pending_preview_resolution = None
+        mode = (
+            f"Selected ROI preview ({self.roi_resolution.value()}%)"
+            if was_full_resolution
+            else f"Overview preview ({self.overview_resolution.value()}%)"
+        )
+        self._show_summary({"mode": f"{mode} — not saved", **result.summary})
+        if unchanged:
+            self.preview_status.setText(
+                "Preview parameters confirmed — final run will use the original image resolution"
+            )
+            self.statusBar().showMessage(
+                "Preview confirmed; run particles for saved full-resolution results", 6000
+            )
+        else:
+            self.preview_status.setText("Parameters changed during preview — preview again to confirm")
+            self.statusBar().showMessage("Preview complete, but its parameters changed", 6000)
 
     def cancel_analysis(self) -> None:
         if self.worker:
@@ -841,6 +1469,13 @@ class MainWindow(QMainWindow):
 
     def _particle_result(self, payload) -> None:
         gray, domain, result = payload
+        result.summary.update(
+            {
+                "source_width_px": gray.shape[1],
+                "source_height_px": gray.shape[0],
+                "analysis_resolution": "original",
+            }
+        )
         self.gray = gray
         self.analysis_mask = domain
         self.current_mask = result.mask.astype(np.uint8)
@@ -895,6 +1530,7 @@ class MainWindow(QMainWindow):
             summary=result.summary,
         )
         layer.source_run_id = run.id
+        domain_layer.source_run_id = run.id
         self.manifest.runs.append(run)
         self.layer_masks[layer.id] = self.current_labels
         self.layer_masks[domain_layer.id] = self.analysis_mask.astype(np.uint8)
@@ -904,8 +1540,15 @@ class MainWindow(QMainWindow):
         self._show_summary(result.summary)
         self._refresh_all()
         self._set_dirty(True)
+        self.preview_status.setText(
+            f"Full-resolution analysis complete ({gray.shape[1]} × {gray.shape[0]} px)"
+        )
 
     def _worker_error(self, detail: str) -> None:
+        self._pending_preview_recipe = None
+        self._pending_preview_scope_ids = []
+        self._pending_preview_full_resolution = False
+        self._pending_preview_resolution = None
         if detail != "Analysis cancelled":
             QMessageBox.critical(self, "Analysis failed", detail)
         self.statusBar().showMessage(detail, 5000)
@@ -914,6 +1557,8 @@ class MainWindow(QMainWindow):
         self.worker = None
         self.preview_button.setEnabled(True)
         self.run_button.setEnabled(True)
+        self.full_resolution_button.setEnabled(True)
+        self.overview_button.setEnabled(True)
         self.cancel_button.setEnabled(False)
 
     def _line_finished(self, tool: str, start: QPointF, end: QPointF) -> None:
@@ -1113,6 +1758,9 @@ class MainWindow(QMainWindow):
         self._set_dirty(True)
 
     def _select_particle(self, point: QPointF) -> None:
+        if self.canvas.current_tool == "eyedropper":
+            self._pick_image_value(point)
+            return
         if self.current_labels is None:
             return
         x = int(np.clip(round(point.x()), 0, self.current_labels.shape[1] - 1))
@@ -1125,6 +1773,56 @@ class MainWindow(QMainWindow):
         else:
             self.selected_labels = {label}
         self.statusBar().showMessage(f"Selected particles: {sorted(self.selected_labels)}", 4000)
+
+    def _pick_image_value(self, point: QPointF) -> None:
+        """Apply a robust native-resolution color sample to the selected target."""
+        if (
+            self.current_path is None
+            or not self.current_path.exists()
+            or self.manifest is None
+        ):
+            self.statusBar().showMessage("The source image is unavailable for sampling", 4000)
+            return
+        x = int(np.clip(round(point.x()), 0, self.manifest.image_width - 1))
+        y = int(np.clip(round(point.y()), 0, self.manifest.image_height - 1))
+        try:
+            sample, _ = load_region(
+                self.current_path,
+                (x - 2, y - 2, x + 3, y + 3),
+                color=True,
+            )
+        except Exception as error:
+            self.statusBar().showMessage(f"Could not sample source image: {error}", 5000)
+            return
+        bgr = np.rint(np.median(sample.reshape(-1, 3), axis=0)).astype(np.uint8)
+        blue, green, red = (int(value) for value in bgr)
+        target = self.eyedropper_target.currentData()
+        if target == "threshold":
+            sampled_channel = to_gray(sample, self.channel.currentData())
+            threshold = round(float(np.median(sampled_channel)))
+            self.manual_threshold.setValue(threshold)
+            self.method.setCurrentIndex(self.method.findData(ThresholdMethod.MANUAL))
+            detail = f"manual threshold {threshold}"
+        else:
+            class_id = (
+                self.binary_class.currentData()
+                if target == "binary_color"
+                else self.seed_class.currentData()
+            )
+            class_definition = next(
+                (item for item in self.manifest.classes if item.id == class_id), None
+            )
+            if class_definition is None:
+                self.statusBar().showMessage("Select a segmentation class first", 4000)
+                return
+            class_definition.color = f"#{red:02x}{green:02x}{blue:02x}"
+            self._render_visible_layers()
+            self._set_dirty(True)
+            detail = f"{class_definition.name} color {class_definition.color}"
+        self.statusBar().showMessage(
+            f"Sampled RGB ({red}, {green}, {blue}) at ({x}, {y}); set {detail}",
+            6000,
+        )
 
     def merge_selected(self) -> None:
         if self.current_labels is None or len(self.selected_labels) < 2:
@@ -1171,6 +1869,131 @@ class MainWindow(QMainWindow):
         self.manifest.edits.append(EditEvent(action="paint_region", target_id=layer.id))
         self._render_visible_layers()
         self._set_dirty(True)
+
+    def _remove_layers(self, requested_ids: set[str]) -> set[str]:
+        """Remove layers and all results from the same analysis runs."""
+        if self.manifest is None or not requested_ids:
+            return set()
+        run_ids = {
+            run.id
+            for run in self.manifest.runs
+            if requested_ids.intersection(run.layer_ids)
+        }
+        removed_ids = set(requested_ids)
+        for run in self.manifest.runs:
+            if run.id in run_ids:
+                removed_ids.update(run.layer_ids)
+        removed_ids.update(
+            layer.id
+            for layer in self.manifest.layers
+            if layer.source_run_id in run_ids
+        )
+        self.manifest.layers = [
+            layer for layer in self.manifest.layers if layer.id not in removed_ids
+        ]
+        self.manifest.runs = [run for run in self.manifest.runs if run.id not in run_ids]
+        for layer_id in removed_ids:
+            self.layer_masks.pop(layer_id, None)
+            self.manifest.particle_records.pop(layer_id, None)
+        if self.current_layer_id in removed_ids:
+            self.current_layer_id = None
+            self.current_mask = None
+            self.current_labels = None
+            self.analysis_mask = None
+            self.particles = []
+            self.selected_labels.clear()
+        return removed_ids
+
+    def delete_selected_layers(self) -> None:
+        if self.manifest is None:
+            return
+        selected_ids = {
+            item.data(Qt.ItemDataRole.UserRole) for item in self.layers_list.selectedItems()
+        }
+        removed_ids = self._remove_layers(selected_ids)
+        for layer_id in removed_ids:
+            self.manifest.edits.append(EditEvent(action="delete_layer", target_id=layer_id))
+        if removed_ids:
+            self._refresh_all()
+            self._render_visible_layers()
+            self._set_dirty(True)
+
+    def delete_selected_rois(self) -> None:
+        if self.manifest is None:
+            return
+        selected_ids = {
+            item.data(Qt.ItemDataRole.UserRole) for item in self.rois_list.selectedItems()
+        }
+        if not selected_ids:
+            return
+        removed_recipe_ids = {
+            roi.recipe_id
+            for roi in self.manifest.rois
+            if roi.id in selected_ids and roi.recipe_id is not None
+        }
+        dependent_layers = {
+            layer.id
+            for layer in self.manifest.layers
+            if selected_ids.intersection(layer.scope_roi_ids)
+        }
+        removed_layers = self._remove_layers(dependent_layers)
+        self.manifest.rois = [roi for roi in self.manifest.rois if roi.id not in selected_ids]
+        still_used_recipes = {roi.recipe_id for roi in self.manifest.rois if roi.recipe_id}
+        self.manifest.recipes = [
+            recipe
+            for recipe in self.manifest.recipes
+            if recipe.id not in removed_recipe_ids or recipe.id in still_used_recipes
+        ]
+        self.run_scope_ids = [value for value in self.run_scope_ids if value not in selected_ids]
+        for roi_id in selected_ids:
+            self.manifest.edits.append(EditEvent(action="delete_roi", target_id=roi_id))
+        for layer_id in removed_layers:
+            self.manifest.edits.append(EditEvent(action="delete_layer", target_id=layer_id))
+        self.display_region_bgr = None
+        self.display_region_bounds = None
+        self._invalidate_preview_confirmation()
+        self._refresh_all()
+        self.show_overview()
+        self._set_dirty(True)
+
+    def delete_selected_measurements(self) -> None:
+        if self.manifest is None:
+            return
+        selected_ids = {
+            item.data(Qt.ItemDataRole.UserRole)
+            for item in self.measurements_list.selectedItems()
+        }
+        if not selected_ids:
+            return
+        if "__calibration__" in selected_ids:
+            self.manifest.calibration = None
+            self.manifest.measurements = [
+                measurement.model_copy(update={"length_mm": None})
+                for measurement in self.manifest.measurements
+            ]
+            self.manifest.edits.append(EditEvent(action="delete_calibration"))
+        measurement_ids = selected_ids - {"__calibration__"}
+        self.manifest.measurements = [
+            measurement
+            for measurement in self.manifest.measurements
+            if measurement.id not in measurement_ids
+        ]
+        for measurement_id in measurement_ids:
+            self.manifest.edits.append(
+                EditEvent(action="delete_measurement", target_id=measurement_id)
+            )
+        self._refresh_measurements()
+        self._set_dirty(True)
+
+    def delete_selected_groups(self) -> None:
+        rows = sorted(
+            {index.row() for index in self.groups_table.selectionModel().selectedRows()},
+            reverse=True,
+        )
+        for row in rows:
+            self.groups_table.removeRow(row)
+        if rows:
+            self.apply_groups()
 
     def add_group(self) -> None:
         row = self.groups_table.rowCount()
@@ -1452,29 +2275,65 @@ class MainWindow(QMainWindow):
         target_index = self.binary_class.findData(recipe.target_class_id)
         if target_index >= 0:
             self.binary_class.setCurrentIndex(target_index)
+        channel_index = self.channel.findData(recipe.channel)
+        if channel_index >= 0:
+            self.channel.setCurrentIndex(channel_index)
+        self.segmentation_method.setCurrentIndex(
+            self.segmentation_method.findData(recipe.segmentation_method)
+        )
         self.method.setCurrentIndex(self.method.findData(recipe.threshold_method))
         self.polarity.setCurrentIndex(self.polarity.findData(recipe.polarity))
         self.illumination.setChecked(recipe.illumination_correction)
         self.split_touching.setChecked(recipe.split_touching)
         self.window_size.setValue(recipe.sauvola_window_px)
         self.sauvola_k.setValue(recipe.sauvola_k)
+        self.gaussian_block.setValue(recipe.gaussian_block_px)
+        self.gaussian_c.setValue(recipe.gaussian_c)
         self.manual_threshold.setValue(round(recipe.manual_threshold))
+        self.gaussian_blur_sigma.setValue(recipe.gaussian_blur_sigma)
+        self.fill_holes.setChecked(recipe.fill_holes)
         self.ball_radius.setValue(recipe.rolling_ball_radius_px)
+        self.open_radius.setValue(recipe.open_radius_px)
+        self.close_radius.setValue(recipe.close_radius_px)
         self.min_area.setValue(recipe.min_particle_area_px)
         self.max_area.setValue(recipe.max_particle_area_px or 0)
+        self.watershed_distance.setValue(recipe.watershed_min_distance_px)
+        self.morphological_input.setCurrentIndex(
+            self.morphological_input.findData(recipe.morphological_input)
+        )
+        self.morphological_gradient.setCurrentIndex(
+            self.morphological_gradient.findData(recipe.morphological_gradient)
+        )
+        self.morphological_gradient_radius.setValue(
+            recipe.morphological_gradient_radius_px
+        )
+        self.morphological_tolerance.setValue(recipe.morphological_tolerance)
+        self.morphological_connectivity.setCurrentIndex(
+            self.morphological_connectivity.findData(recipe.morphological_connectivity)
+        )
+        self.morphological_calculate_dams.setChecked(recipe.morphological_calculate_dams)
         self.tile_size.setValue(recipe.tile_size_px)
+        self._update_analysis_parameter_visibility()
 
     def _refresh_measurements(self) -> None:
         self.measurements_list.clear()
         if not self.manifest:
             return
         if self.manifest.calibration:
-            self.measurements_list.addItem(
+            calibration_item = QListWidgetItem(
                 f"Calibration: {self.manifest.calibration.mm_per_pixel:.8g} mm/px"
             )
+            calibration_item.setData(Qt.ItemDataRole.UserRole, "__calibration__")
+            self.measurements_list.addItem(calibration_item)
         for item in self.manifest.measurements:
-            value = f"{item.length_mm:.6g} mm" if item.length_mm is not None else f"{item.length_px:.3f} px"
-            self.measurements_list.addItem(f"{item.name}: {value}")
+            value = (
+                f"{item.length_mm:.6g} mm ({item.length_px:.3f} px)"
+                if item.length_mm is not None
+                else f"{item.length_px:.3f} px"
+            )
+            measurement_item = QListWidgetItem(f"{item.name}: {value}")
+            measurement_item.setData(Qt.ItemDataRole.UserRole, item.id)
+            self.measurements_list.addItem(measurement_item)
         lines: list[tuple[QPointF, QPointF, QColor]] = []
         calibration = self.manifest.calibration
         if calibration and calibration.reference_start and calibration.reference_end:

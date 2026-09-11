@@ -10,7 +10,16 @@ from gst_image.analysis.particles import (
     segment_particles,
     split_particle_by_line,
 )
-from gst_image.models import Calibration, ParticleGroup, SegmentationRecipe, ThresholdMethod
+from gst_image.analysis.preprocess import threshold_array
+from gst_image.models import (
+    Calibration,
+    MorphologicalGradient,
+    MorphologicalInput,
+    ParticleGroup,
+    SegmentationMethod,
+    SegmentationRecipe,
+    ThresholdMethod,
+)
 
 
 def test_manual_segmentation_and_radius_measurement():
@@ -65,6 +74,106 @@ def test_local_threshold_handles_gradient_and_stitch_step():
     union = np.count_nonzero(result.mask | (gold > 0))
     assert intersection / union >= 0.80
     assert result.summary["particle_count"] == 4
+
+
+@pytest.mark.parametrize("method", list(ThresholdMethod))
+def test_every_threshold_method_produces_a_binary_selection(method):
+    image = np.tile(np.linspace(20, 230, 31, dtype=np.uint8), (31, 1))
+    recipe = SegmentationRecipe(
+        threshold_method=method,
+        manual_threshold=125,
+        sauvola_window_px=9,
+        gaussian_block_px=9,
+        gaussian_c=2,
+        gaussian_blur_sigma=0,
+    )
+    selected = threshold_array(image, recipe, global_otsu_threshold=125)
+    assert selected.dtype == bool
+    assert selected.shape == image.shape
+    assert np.any(selected)
+    assert np.any(~selected)
+
+
+def test_flood_fill_option_fills_enclosed_particle_holes():
+    image = np.full((100, 100), 220, np.uint8)
+    cv2.circle(image, (50, 50), 25, 30, 8)
+    common = {
+        "threshold_method": ThresholdMethod.MANUAL,
+        "manual_threshold": 100,
+        "illumination_correction": False,
+        "gaussian_blur_sigma": 0,
+        "open_radius_px": 0,
+        "close_radius_px": 0,
+        "split_touching": False,
+        "tile_size_px": 256,
+    }
+    unfilled = segment_particles(
+        image,
+        np.ones_like(image, bool),
+        SegmentationRecipe(fill_holes=False, **common),
+    )
+    filled = segment_particles(
+        image,
+        np.ones_like(image, bool),
+        SegmentationRecipe(fill_holes=True, **common),
+    )
+    assert not unfilled.mask[50, 50]
+    assert filled.mask[50, 50]
+    assert np.count_nonzero(filled.mask) > np.count_nonzero(unfilled.mask)
+
+
+def test_morphological_closing_joins_narrow_threshold_gaps():
+    image = np.full((100, 100), 220, np.uint8)
+    cv2.rectangle(image, (15, 35), (44, 65), 30, cv2.FILLED)
+    cv2.rectangle(image, (47, 35), (76, 65), 30, cv2.FILLED)
+    common = {
+        "threshold_method": ThresholdMethod.MANUAL,
+        "manual_threshold": 100,
+        "illumination_correction": False,
+        "gaussian_blur_sigma": 0,
+        "open_radius_px": 0,
+        "split_touching": False,
+        "tile_size_px": 256,
+    }
+    separate = segment_particles(
+        image,
+        np.ones_like(image, bool),
+        SegmentationRecipe(close_radius_px=0, **common),
+    )
+    closed = segment_particles(
+        image,
+        np.ones_like(image, bool),
+        SegmentationRecipe(close_radius_px=2, **common),
+    )
+    assert separate.summary["particle_count"] == 2
+    assert closed.summary["particle_count"] == 1
+
+
+@pytest.mark.parametrize("gradient", list(MorphologicalGradient))
+def test_morphological_watershed_segments_threshold_foreground(gradient):
+    image = np.full((120, 180), 220, np.uint8)
+    cv2.circle(image, (55, 60), 24, 35, cv2.FILLED)
+    cv2.circle(image, (125, 60), 20, 65, cv2.FILLED)
+    recipe = SegmentationRecipe(
+        segmentation_method=SegmentationMethod.MORPHOLOGICAL_WATERSHED,
+        morphological_input=MorphologicalInput.OBJECT,
+        morphological_gradient=gradient,
+        morphological_gradient_radius_px=2,
+        morphological_tolerance=5,
+        morphological_connectivity=4,
+        morphological_calculate_dams=True,
+        threshold_method=ThresholdMethod.MANUAL,
+        manual_threshold=100,
+        illumination_correction=False,
+        gaussian_blur_sigma=0,
+        open_radius_px=0,
+        close_radius_px=0,
+        min_particle_area_px=100,
+        tile_size_px=256,
+    )
+    result = segment_particles(image, np.ones_like(image, bool), recipe)
+    assert result.summary["particle_count"] == 2
+    assert set(np.unique(result.labels)) == {0, 1, 2}
 
 
 def test_boundary_particles_contribute_area_but_are_flagged():

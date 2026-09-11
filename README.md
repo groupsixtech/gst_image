@@ -39,12 +39,48 @@ not on `PATH`.
 1. Open a micrograph or an existing `.gstproj` directory.
 2. Draw over the scale bar, enter its known length, and choose mm or µm.
 3. Add inclusion/analysis rectangles or polygons and exclusion regions as needed.
-4. Preview and run the particle recipe. Use local Sauvola thresholding for stitched images,
-   or choose Otsu, adaptive Gaussian, or manual thresholding.
+4. Preview and run the particle recipe. Overview and selected-ROI resolutions are controlled
+   independently from 0-100%; 100% uses native pixels. Use **Fast overview** for whole-image
+   tuning, or select one Include/Analysis box and choose **Selected ROI** to limit memory. The
+   **Run particles — full resolution** action always analyzes the original source image.
+   Use the eyedropper to set a manual threshold or a segmentation-class color directly from
+   a native-resolution 5 × 5 source sample.
 5. Inspect the overlay and particle table; use mask brush/eraser and split/merge corrections.
 6. For macro zones, paint example strokes for Weld, HAZ, Base, or custom classes and train
    the assisted classifier.
 7. Save the project and export masks, overlays, measurements, fractions, and particle CSVs.
+
+Analysis values have linked sliders and numeric fields for quick tuning and exact entry.
+Calibrated measurements are shown in both physical and pixel units. Layers, ROIs,
+measurements/calibration, and particle groups can be removed with their tab's **Delete
+selected** action; deleting an ROI also removes analysis layers derived from that ROI.
+
+Threshold-specific controls change with the selected method:
+
+| Method | Method-specific controls |
+| --- | --- |
+| Sauvola | Window size and k |
+| Adaptive Gaussian | Block size and constant C |
+| Otsu | None; the threshold is calculated automatically from the analysis domain |
+| Manual | Intensity threshold, which can also be set with the eyedropper |
+
+Analysis channel, polarity, Gaussian pre-blur, optional illumination correction, morphology,
+particle-area filtering, watershed splitting, and tile size are shared settings and remain
+available when applicable. The illumination radius is hidden when correction is disabled, and
+watershed distance is hidden when splitting is disabled.
+
+Binary closing and optional border-seeded flood filling are available after every threshold
+method. Closing joins nearby foreground and seals narrow gaps; flood filling fills enclosed
+background holes after all tiles have been assembled, so tile boundaries do not create false
+holes. **Restore analysis defaults** resets the full recipe, brush setting, preview mode, and
+both resolution controls (25% overview and 100% selected ROI).
+
+The **Morphological watershed** segmentation option is based on the ImageJ/MorphoLibJ
+[Morphological Segmentation](https://imagej.net/plugins/morphological-segmentation) pipeline.
+It supports object or border inputs, morphological/internal/external gradients, gradient
+radius, extended-minima tolerance, 4/8 connectivity, and optional watershed dams. In GST Image,
+the watershed is constrained to the foreground selected by the active threshold method so
+particle area fractions retain their foreground/background meaning.
 
 ## CLI examples
 

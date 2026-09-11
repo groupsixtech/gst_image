@@ -109,6 +109,22 @@ class ThresholdMethod(StrEnum):
     MANUAL = "manual"
 
 
+class SegmentationMethod(StrEnum):
+    THRESHOLD = "threshold"
+    MORPHOLOGICAL_WATERSHED = "morphological_watershed"
+
+
+class MorphologicalInput(StrEnum):
+    OBJECT = "object"
+    BORDER = "border"
+
+
+class MorphologicalGradient(StrEnum):
+    MORPHOLOGICAL = "morphological"
+    INTERNAL = "internal"
+    EXTERNAL = "external"
+
+
 class ParticlePolarity(StrEnum):
     DARK = "dark"
     BRIGHT = "bright"
@@ -119,6 +135,7 @@ class SegmentationRecipe(BaseModel):
     name: str = "Particle segmentation"
     target_class_id: str | None = None
     channel: str = "gray"
+    segmentation_method: SegmentationMethod = SegmentationMethod.THRESHOLD
     polarity: ParticlePolarity = ParticlePolarity.DARK
     illumination_correction: bool = True
     rolling_ball_radius_px: int = Field(default=151, ge=3)
@@ -129,6 +146,7 @@ class SegmentationRecipe(BaseModel):
     gaussian_block_px: int = Field(default=101, ge=3)
     gaussian_c: float = 2.0
     gaussian_blur_sigma: float = Field(default=0.8, ge=0)
+    fill_holes: bool = False
     open_radius_px: int = Field(default=1, ge=0)
     close_radius_px: int = Field(default=1, ge=0)
     open_radius_mm: float | None = Field(default=None, ge=0)
@@ -140,6 +158,12 @@ class SegmentationRecipe(BaseModel):
     split_touching: bool = True
     watershed_min_distance_px: int = Field(default=7, ge=1)
     watershed_min_distance_mm: float | None = Field(default=None, gt=0)
+    morphological_input: MorphologicalInput = MorphologicalInput.OBJECT
+    morphological_gradient: MorphologicalGradient = MorphologicalGradient.MORPHOLOGICAL
+    morphological_gradient_radius_px: int = Field(default=1, ge=1)
+    morphological_tolerance: int = Field(default=10, ge=1, le=255)
+    morphological_connectivity: Literal[4, 8] = 4
+    morphological_calculate_dams: bool = True
     tile_size_px: int = Field(default=2048, ge=256)
     exclude_border_particles_from_size_stats: bool = True
 

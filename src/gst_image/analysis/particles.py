@@ -11,6 +11,7 @@ import numpy as np
 from scipy import ndimage as ndi
 from skimage.feature import peak_local_max
 from skimage.measure import regionprops
+from skimage.morphology import h_minima
 from skimage.segmentation import watershed
 
 from gst_image.analysis.preprocess import (
@@ -19,7 +20,16 @@ from gst_image.analysis.preprocess import (
     threshold_array,
     to_gray,
 )
-from gst_image.models import Calibration, ParticleAnalysis, ParticleRecord, SegmentationRecipe
+from gst_image.models import (
+    Calibration,
+    MorphologicalGradient,
+    MorphologicalInput,
+    ParticleAnalysis,
+    ParticleRecord,
+    SegmentationMethod,
+    SegmentationRecipe,
+    ThresholdMethod,
+)
 
 Progress = Callable[[float, str], None]
 Cancelled = Callable[[], bool]
@@ -100,12 +110,21 @@ def _threshold_tiled(
 ) -> np.ndarray:
     height, width = gray.shape
     output = np.zeros_like(gray, dtype=np.uint8)
-    window_halo = max(recipe.sauvola_window_px, recipe.gaussian_block_px) // 2
+    if recipe.threshold_method == ThresholdMethod.SAUVOLA:
+        window_halo = recipe.sauvola_window_px // 2
+    elif recipe.threshold_method == ThresholdMethod.ADAPTIVE_GAUSSIAN:
+        window_halo = recipe.gaussian_block_px // 2
+    else:
+        window_halo = 0
     morphology_halo = 2 * max(recipe.open_radius_px, recipe.close_radius_px)
     halo = max(8, window_halo + morphology_halo + 4)
     tile = recipe.tile_size_px
     total = math.ceil(height / tile) * math.ceil(width / tile)
-    global_otsu = _otsu_from_preview(gray, field, analysis_mask)
+    global_otsu = (
+        _otsu_from_preview(gray, field, analysis_mask)
+        if recipe.threshold_method == ThresholdMethod.OTSU
+        else None
+    )
     kernel_open = (
         cv2.getStructuringElement(
             cv2.MORPH_ELLIPSE, (2 * recipe.open_radius_px + 1,) * 2
@@ -147,6 +166,7 @@ def _threshold_tiled(
 
 
 def _filter_and_label(mask: np.ndarray, minimum: int, maximum: int | None) -> np.ndarray:
+    mask = np.asarray(mask, dtype=np.uint8)
     count, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
     keep = np.zeros(count, dtype=bool)
     areas = stats[:, cv2.CC_STAT_AREA]
@@ -156,6 +176,66 @@ def _filter_and_label(mask: np.ndarray, minimum: int, maximum: int | None) -> np
     filtered = keep[labels].astype(np.uint8)
     _, relabeled = cv2.connectedComponents(filtered, connectivity=8)
     return relabeled.astype(np.int32, copy=False)
+
+
+def _fill_binary_holes(mask: np.ndarray) -> np.ndarray:
+    """Fill background islands by flood-filling background connected to the border."""
+    padded = np.pad(np.asarray(mask, dtype=np.uint8), 1)
+    background = (padded == 0).astype(np.uint8)
+    flooded = background.copy()
+    cv2.floodFill(flooded, None, (0, 0), 2, flags=4)
+    holes = flooded == 1
+    return (padded.astype(bool) | holes)[1:-1, 1:-1]
+
+
+def _morphological_watershed_labels(
+    gray: np.ndarray,
+    field: np.ndarray | None,
+    mask: np.ndarray,
+    recipe: SegmentationRecipe,
+    progress: Progress | None,
+    cancelled: Cancelled | None,
+) -> np.ndarray:
+    """ImageJ-style extended-minima watershed constrained to threshold foreground."""
+    _report(progress, 0.62, "Preparing morphological watershed")
+    working = flatten_illumination(gray, field) if field is not None else gray
+    if recipe.gaussian_blur_sigma > 0:
+        working = cv2.GaussianBlur(working, (0, 0), recipe.gaussian_blur_sigma)
+    if recipe.morphological_input == MorphologicalInput.OBJECT:
+        radius = recipe.morphological_gradient_radius_px
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * radius + 1,) * 2)
+        eroded = cv2.erode(working, kernel)
+        dilated = cv2.dilate(working, kernel)
+        if recipe.morphological_gradient == MorphologicalGradient.INTERNAL:
+            surface = cv2.subtract(working, eroded)
+        elif recipe.morphological_gradient == MorphologicalGradient.EXTERNAL:
+            surface = cv2.subtract(dilated, working)
+        else:
+            surface = cv2.subtract(dilated, eroded)
+    else:
+        surface = working
+    connectivity = ndi.generate_binary_structure(
+        2, 1 if recipe.morphological_connectivity == 4 else 2
+    )
+    minima = h_minima(
+        surface,
+        recipe.morphological_tolerance,
+        footprint=connectivity,
+    )
+    minima &= np.asarray(mask, dtype=bool)
+    markers, marker_count = ndi.label(minima, structure=connectivity)
+    if marker_count == 0:
+        markers, _ = ndi.label(mask, structure=connectivity)
+    _check_cancelled(cancelled)
+    _report(progress, 0.70, "Flooding morphological watershed basins")
+    labels = watershed(
+        surface,
+        markers=markers,
+        mask=np.asarray(mask, dtype=bool),
+        connectivity=connectivity,
+        watershed_line=recipe.morphological_calculate_dams,
+    )
+    return labels.astype(np.int32, copy=False)
 
 
 def _compact_instance_labels(labels: np.ndarray) -> np.ndarray:
@@ -377,13 +457,22 @@ def segment_particles(
     )
     _check_cancelled(cancelled)
     raw_mask = _threshold_tiled(gray, field, domain, recipe, progress, cancelled)
-    _report(progress, 0.62, "Filtering connected particles")
-    labels = _filter_and_label(raw_mask, minimum, maximum)
-    if recipe.split_touching:
-        labels = _split_touching_components(
-            labels, minimum, recipe.watershed_min_distance_px, progress, cancelled
+    if recipe.fill_holes:
+        _report(progress, 0.60, "Flood-filling enclosed holes")
+        raw_mask = _fill_binary_holes(raw_mask) & domain
+    if recipe.segmentation_method == SegmentationMethod.MORPHOLOGICAL_WATERSHED:
+        labels = _morphological_watershed_labels(
+            gray, field, raw_mask, recipe, progress, cancelled
         )
         labels = _filter_instance_labels(labels, minimum, maximum)
+    else:
+        _report(progress, 0.62, "Filtering connected particles")
+        labels = _filter_and_label(raw_mask, minimum, maximum)
+        if recipe.split_touching:
+            labels = _split_touching_components(
+                labels, minimum, recipe.watershed_min_distance_px, progress, cancelled
+            )
+            labels = _filter_instance_labels(labels, minimum, maximum)
     _check_cancelled(cancelled)
     mask = labels > 0
     _report(progress, 0.82, "Measuring particles")

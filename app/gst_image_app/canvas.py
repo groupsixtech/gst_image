@@ -60,6 +60,7 @@ class ImageCanvas(QGraphicsView):
         self._tool = "pan"
         self._source_size = (1, 1)
         self._preview_size = (1, 1)
+        self._display_rect = QRectF(0, 0, 1, 1)
         self._base_item: QGraphicsPixmapItem | None = None
         self._overlay_item: QGraphicsPixmapItem | None = None
         self._annotation_item: QGraphicsPathItem | None = None
@@ -77,6 +78,14 @@ class ImageCanvas(QGraphicsView):
     def preview_size(self) -> tuple[int, int]:
         return self._preview_size
 
+    @property
+    def current_tool(self) -> str:
+        return self._tool
+
+    @property
+    def display_rect(self) -> QRectF:
+        return QRectF(self._display_rect)
+
     def set_tool(self, tool: str) -> None:
         self._clear_temporary()
         self._polygon.clear()
@@ -90,18 +99,29 @@ class ImageCanvas(QGraphicsView):
             Qt.CursorShape.OpenHandCursor if tool == "pan" else Qt.CursorShape.CrossCursor
         )
 
-    def set_image(self, preview_bgr: np.ndarray, full_size: tuple[int, int]) -> None:
+    def set_image(
+        self,
+        preview_bgr: np.ndarray,
+        full_size: tuple[int, int],
+        source_rect: tuple[int, int, int, int] | None = None,
+    ) -> None:
         self.scene().clear()
         self._preview_size = (preview_bgr.shape[1], preview_bgr.shape[0])
         self._source_size = full_size
+        left, top, right, bottom = source_rect or (0, 0, full_size[0], full_size[1])
+        if right <= left or bottom <= top:
+            raise ValueError("Display source rectangle must have a positive size")
+        self._display_rect = QRectF(left, top, right - left, bottom - top)
         pixmap = QPixmap.fromImage(_qimage_bgr(preview_bgr))
         self._base_item = self.scene().addPixmap(pixmap)
         self._base_item.setZValue(0)
         transform = QTransform.fromScale(
-            full_size[0] / preview_bgr.shape[1], full_size[1] / preview_bgr.shape[0]
+            (right - left) / preview_bgr.shape[1],
+            (bottom - top) / preview_bgr.shape[0],
         )
         self._base_item.setTransform(transform)
-        self.scene().setSceneRect(QRectF(0, 0, full_size[0], full_size[1]))
+        self._base_item.setPos(left, top)
+        self.scene().setSceneRect(self._display_rect)
         self._overlay_item = None
         self._annotation_item = self.scene().addPath(QPainterPath(), QPen(QColor("white"), 2))
         self._annotation_item.setZValue(20)
@@ -109,6 +129,27 @@ class ImageCanvas(QGraphicsView):
         self._roi_item = self.scene().addPath(QPainterPath(), roi_pen)
         self._roi_item.setZValue(19)
         self.fitInView(self.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+
+    def _values_in_display_rect(self, values: np.ndarray) -> np.ndarray:
+        """Crop full-source overlays when the canvas is displaying an ROI."""
+        values = np.asarray(values)
+        display_width = round(self._display_rect.width())
+        display_height = round(self._display_rect.height())
+        if values.shape[:2] == (display_height, display_width):
+            return values
+        source_width, source_height = self._source_size
+        if values.shape[:2] == (source_height, source_width):
+            left = max(0, round(self._display_rect.left()))
+            top = max(0, round(self._display_rect.top()))
+            right = min(source_width, left + display_width)
+            bottom = min(source_height, top + display_height)
+            return values[top:bottom, left:right]
+        return values
+
+    def _position_overlay(self, item: QGraphicsPixmapItem) -> None:
+        item.setTransform(self._base_item.transform())
+        item.setPos(self._base_item.pos())
+        item.setZValue(10)
 
     def set_mask_overlay(
         self,
@@ -124,7 +165,10 @@ class ImageCanvas(QGraphicsView):
         if mask is None:
             return
         width, height = self._preview_size
-        small = cv2.resize(mask.astype(np.uint8), (width, height), interpolation=cv2.INTER_NEAREST)
+        visible = self._values_in_display_rect(mask)
+        small = cv2.resize(
+            visible.astype(np.uint8), (width, height), interpolation=cv2.INTER_NEAREST
+        )
         rgba = np.zeros((height, width, 4), dtype=np.uint8)
         rgba[small > 0, :3] = color
         rgba[small > 0, 3] = round(255 * opacity)
@@ -136,8 +180,7 @@ class ImageCanvas(QGraphicsView):
             QImage.Format.Format_RGBA8888,
         ).copy()
         self._overlay_item = self.scene().addPixmap(QPixmap.fromImage(image))
-        self._overlay_item.setTransform(self._base_item.transform())
-        self._overlay_item.setZValue(10)
+        self._position_overlay(self._overlay_item)
 
     def set_label_overlay(
         self, labels: np.ndarray | None, colors: dict[int, tuple[int, int, int]], opacity: float = 0.45
@@ -146,7 +189,10 @@ class ImageCanvas(QGraphicsView):
             self.set_mask_overlay(None)
             return
         width, height = self._preview_size
-        small = cv2.resize(labels.astype(np.int32), (width, height), interpolation=cv2.INTER_NEAREST)
+        visible = self._values_in_display_rect(labels)
+        small = cv2.resize(
+            visible.astype(np.int32), (width, height), interpolation=cv2.INTER_NEAREST
+        )
         rgba = np.zeros((height, width, 4), dtype=np.uint8)
         for label, color in colors.items():
             member = small == label
@@ -158,8 +204,7 @@ class ImageCanvas(QGraphicsView):
             rgba.data, width, height, rgba.strides[0], QImage.Format.Format_RGBA8888
         ).copy()
         self._overlay_item = self.scene().addPixmap(QPixmap.fromImage(image))
-        self._overlay_item.setTransform(self._base_item.transform())
-        self._overlay_item.setZValue(10)
+        self._position_overlay(self._overlay_item)
 
     def set_particle_group_overlay(
         self,
@@ -169,8 +214,11 @@ class ImageCanvas(QGraphicsView):
         opacity: float = 0.55,
     ) -> None:
         width, height = self._preview_size
+        visible_labels = self._values_in_display_rect(labels)
         small_labels = cv2.resize(
-            labels.astype(np.int32), (width, height), interpolation=cv2.INTER_NEAREST
+            visible_labels.astype(np.int32),
+            (width, height),
+            interpolation=cv2.INTER_NEAREST,
         )
         lookup = np.zeros(max(1, int(small_labels.max()) + 1), dtype=np.uint16)
         for label, group in label_groups.items():
@@ -200,8 +248,9 @@ class ImageCanvas(QGraphicsView):
         premultiplied = np.zeros((height, width, 3), dtype=np.float32)
         alpha = np.zeros((height, width), dtype=np.float32)
         for values, colors, opacity in layers:
+            visible = self._values_in_display_rect(values)
             small = cv2.resize(
-                np.asarray(values).astype(np.int32),
+                visible.astype(np.int32),
                 (width, height),
                 interpolation=cv2.INTER_NEAREST,
             )
@@ -233,8 +282,7 @@ class ImageCanvas(QGraphicsView):
             QImage.Format.Format_RGBA8888,
         ).copy()
         self._overlay_item = self.scene().addPixmap(QPixmap.fromImage(image))
-        self._overlay_item.setTransform(self._base_item.transform())
-        self._overlay_item.setZValue(10)
+        self._position_overlay(self._overlay_item)
 
     def set_annotations(self, lines: list[tuple[QPointF, QPointF, QColor]]) -> None:
         path = QPainterPath()
@@ -283,7 +331,7 @@ class ImageCanvas(QGraphicsView):
             elif self._tool in self.BRUSH_TOOLS:
                 self._brush_points = [point]
                 self.brush_stroke.emit(self._tool, [point])
-            elif self._tool == "select":
+            elif self._tool in {"select", "eyedropper"}:
                 self.scene_clicked.emit(point)
         super().mousePressEvent(event)
 

@@ -1,0 +1,13 @@
+- [x] Images were too low resolution. Added a native-resolution view and preview mode scoped by a selected Include/Analysis box, avoiding a full stitched-image canvas allocation.
+- [x] Previewed parameters can be confirmed, and Run particles explicitly analyzes the original image resolution.
+- [x] Added an eyedropper for manual thresholds and segmentation/region class colors using native-resolution source samples.
+- [x] Added linked sliders (with exact numeric fields) for the analysis parameters.
+- [x] Calibrated measurements now also show their pixel length in brackets (for example, "Measurement 1: 0.5 mm (50 px)").
+- [x] Added Delete selected actions for layers, ROIs, measurements/calibration, and groups; deleting items also clears their image overlays/annotations and dependent ROI results.
+- [x] Fixed the eyedropper click interaction; it now samples the native source and updates the selected threshold/color target.
+- [x] Verified all four threshold methods and added method-specific GUI parameters/visibility for Sauvola, adaptive Gaussian, Otsu, and manual thresholding.
+- [x] Added a Restore analysis defaults button that resets the complete recipe, preview settings, resolutions, and brush size.
+- [x] Added independent 0-100% overview and selected-ROI resolution controls; 100% loads native resolution while final analysis remains full resolution regardless of preview settings.
+- [x] Added threshold post-processing controls for morphological closing and border-seeded flood filling of enclosed holes. https://medium.com/python-other/hole-filling-of-opencv-binary-image-use-floodfill-eb9464023b20
+- [x] Added an ImageJ/MorphoLibJ-inspired morphological watershed segmentation method with object/border inputs, morphological/internal/external gradients, extended-minima tolerance, 4/8 connectivity, and optional dams. https://imagej.net/plugins/morphological-segmentation
+- [ ] Class seed mask brush       
