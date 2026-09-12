@@ -1,0 +1,3 @@
+analysis_layer_id,analysis_layer,group,count,area_px,analyzed_pixels,area_fraction,estimated_volume_fraction_percent
+951c3d33-8608-4b98-ab9d-16e24a5b6f3d,Particle — 1,Filtered out,243,805388.0,2075598,0.38802696861338276,38.802696861338276
+951c3d33-8608-4b98-ab9d-16e24a5b6f3d,Particle — 1,Included particles,9,456968.0,2075598,0.22016209304499235,22.016209304499235

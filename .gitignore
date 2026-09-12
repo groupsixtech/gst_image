@@ -14,3 +14,4 @@ dist/
 test-output/
 pytest-cache*/
 *.code-workspace
+.gst-image/
