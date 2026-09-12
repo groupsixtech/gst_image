@@ -5,8 +5,10 @@ import pytest
 from gst_image.analysis.calibration import create_measurement
 from gst_image.models import (
     Calibration,
+    ParticleCriteria,
     ParticleGroup,
     ParticleRecord,
+    ParticleSizeMetric,
     RegionClassifierRecipe,
     SegmentationRecipe,
 )
@@ -53,6 +55,17 @@ def test_group_ranges_are_half_open_except_final_group():
     assert last.matches(value, final=True)
     endpoint = particle(radius_mm=1)
     assert last.matches(endpoint, final=True)
+
+
+def test_particle_size_criteria_support_radius_diameter_and_area_units():
+    value = particle(radius_px=5, radius_mm=0.5)
+    assert ParticleCriteria(size_unit="px").size_value(value) == 5
+    assert ParticleCriteria(
+        size_metric=ParticleSizeMetric.EQUIVALENT_DIAMETER, size_unit="px"
+    ).size_value(value) == 10
+    assert ParticleCriteria(
+        size_metric=ParticleSizeMetric.AREA, size_unit="mm"
+    ).size_value(value) == pytest.approx(math.pi * 0.5**2)
 
 
 def test_recipe_normalizes_even_windows():

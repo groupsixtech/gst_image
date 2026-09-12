@@ -3,7 +3,13 @@ import cv2
 import numpy as np
 import pytest
 
-from gst_image.analysis.groups import assign_particle_groups
+from gst_image.analysis.groups import (
+    assign_particle_groups,
+    evaluate_particle_grouping,
+    generate_particle_groups,
+    particle_group_statistics,
+    validate_particle_groups,
+)
 from gst_image.analysis.particles import (
     measure_particles,
     merge_particle_labels,
@@ -15,8 +21,11 @@ from gst_image.models import (
     Calibration,
     MorphologicalGradient,
     MorphologicalInput,
+    ParticleCriteria,
     ParticleGroup,
+    ParticleGrouping,
     ParticlePolarity,
+    ParticleSizeMetric,
     SegmentationMethod,
     SegmentationRecipe,
     ThresholdMethod,
@@ -236,6 +245,89 @@ def test_ordered_group_assignment():
     )
     assigned = assign_particle_groups([at_boundary, at_final_upper], groups)
     assert [item.group for item in assigned] == ["large", "large"]
+
+
+def test_saved_grouping_filters_then_partitions_by_size_and_circularity():
+    labels = np.zeros((80, 80), np.int32)
+    cv2.circle(labels, (20, 40), 5, 1, cv2.FILLED)
+    cv2.circle(labels, (55, 40), 10, 2, cv2.FILLED)
+    records = measure_particles(labels, Calibration(mm_per_pixel=0.1))
+    records[0] = records[0].model_copy(update={"circularity": 0.4})
+    records[1] = records[1].model_copy(update={"circularity": 0.9})
+    groups = generate_particle_groups(
+        [0, 0.75, 2],
+        [0, 0.5, 1],
+        size_metric=ParticleSizeMetric.EQUIVALENT_RADIUS,
+        size_unit="mm",
+    )
+    grouping = ParticleGrouping(
+        name="Filtered grid",
+        source_layer_id="particles",
+        filter_criteria=ParticleCriteria(
+            size_unit="mm", size_min=0.4, size_max=2, circularity_min=0.3
+        ),
+        groups=groups,
+    )
+
+    result = evaluate_particle_grouping(records, grouping)
+
+    assert result.filtered_labels == set()
+    assert result.unclassified_labels == set()
+    assert [particle.group for particle in result.particles] == [
+        "Size 1 / Circularity 1",
+        "Size 2 / Circularity 2",
+    ]
+    filtered = grouping.model_copy(
+        update={
+            "filter_criteria": ParticleCriteria(
+                size_unit="mm", size_min=0.4, circularity_min=0.5
+            )
+        }
+    )
+    filtered_result = evaluate_particle_grouping(records, filtered)
+    assert filtered_result.filtered_labels == {1}
+    assert filtered_result.included_labels == {2}
+    assert records[0].group == "Unclassified"
+
+
+def test_group_validation_rejects_overlap_but_allows_adjacent_ranges():
+    adjacent = [
+        ParticleGroup(name="Small", size_unit="px", size_min=0, size_max=5),
+        ParticleGroup(name="Large", size_unit="px", size_min=5, size_max=10),
+    ]
+    validate_particle_groups(adjacent)
+    with pytest.raises(ValueError, match="overlap"):
+        validate_particle_groups(
+            adjacent
+            + [ParticleGroup(name="Overlap", size_unit="px", size_min=4, size_max=6)]
+        )
+
+
+def test_group_statistics_include_distribution_and_analysis_denominator():
+    labels = np.zeros((50, 50), np.int32)
+    cv2.circle(labels, (15, 25), 4, 1, cv2.FILLED)
+    cv2.circle(labels, (35, 25), 7, 2, cv2.FILLED)
+    records = measure_particles(labels)
+    grouping = ParticleGrouping(
+        groups=[
+            ParticleGroup(
+                name="All", size_unit="px", size_min=0, size_max=20,
+                circularity_min=0, circularity_max=1,
+            )
+        ]
+    )
+    result = evaluate_particle_grouping(records, grouping)
+    statistics = particle_group_statistics(
+        records, grouping, result, analyzed_pixels=2500
+    )
+
+    assert statistics["All"]["count"] == 2
+    assert statistics["All"]["count_percent"] == 100
+    assert statistics["All"]["area_fraction"] == pytest.approx(
+        sum(particle.area_px for particle in records) / 2500
+    )
+    assert statistics["All"]["size"]["median"] is not None
+    assert statistics["All"]["circularity"]["mean"] is not None
 
 
 def test_physical_morphology_requires_calibration():

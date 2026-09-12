@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.metadata
 import json
 import shutil
+import uuid
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -54,8 +55,31 @@ def _migrate(payload: dict[str, Any]) -> dict[str, Any]:
     version = int(payload.get("schema_version", 1))
     if version > PROJECT_SCHEMA_VERSION:
         raise ValueError(f"Project schema {version} is newer than this application supports")
-    # SegmentationRecipe's pre-validator translates legacy manual_threshold
-    # values wherever recipes occur, including recipes embedded in run history.
+    if version < 3 and payload.get("groups") and not payload.get("particle_groupings"):
+        instance_layers = [
+            layer for layer in payload.get("layers", []) if layer.get("kind") == "instances"
+        ]
+        if not instance_layers:
+            instance_layers = [{"id": None}]
+        groupings = []
+        active: dict[str, str] = {}
+        for layer in instance_layers:
+            grouping_id = str(uuid.uuid4())
+            groupings.append(
+                {
+                    "id": grouping_id,
+                    "name": "Migrated particle grouping",
+                    "source_layer_id": layer.get("id"),
+                    "groups": [dict(group) for group in payload["groups"]],
+                }
+            )
+            if layer.get("id"):
+                active[layer["id"]] = grouping_id
+        payload["particle_groupings"] = groupings
+        payload["active_particle_groupings"] = active
+        payload["groups"] = []
+    # SegmentationRecipe's pre-validator translates legacy manual_threshold values wherever
+    # recipes occur, including recipes embedded in run history.
     payload["schema_version"] = PROJECT_SCHEMA_VERSION
     return payload
 
@@ -157,6 +181,24 @@ def validate_project(path: str | Path, *, verify_hash: bool = True) -> list[str]
     for layer in manifest.layers:
         if layer.mask_path and not (root / layer.mask_path).exists():
             issues.append(f"Layer mask is missing: {layer.mask_path}")
+    layer_ids = {layer.id for layer in manifest.layers}
+    groupings = {grouping.id: grouping for grouping in manifest.particle_groupings}
+    for grouping in groupings.values():
+        if grouping.source_layer_id and grouping.source_layer_id not in layer_ids:
+            issues.append(
+                f"Particle grouping {grouping.name!r} references a missing layer: "
+                f"{grouping.source_layer_id}"
+            )
+    for layer_id, grouping_id in manifest.active_particle_groupings.items():
+        grouping = groupings.get(grouping_id)
+        if layer_id not in layer_ids:
+            issues.append(f"Active particle grouping references a missing layer: {layer_id}")
+        elif grouping is None:
+            issues.append(f"Active particle grouping is missing: {grouping_id}")
+        elif grouping.source_layer_id != layer_id:
+            issues.append(
+                f"Active particle grouping {grouping.name!r} belongs to a different layer"
+            )
     return issues
 
 
@@ -184,4 +226,6 @@ def relink_source(
         manifest.layers.clear()
         manifest.runs.clear()
         manifest.particle_records.clear()
+        manifest.particle_groupings.clear()
+        manifest.active_particle_groupings.clear()
     return manifest

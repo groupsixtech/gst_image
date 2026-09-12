@@ -1,8 +1,16 @@
 import cv2
 import numpy as np
 
+from gst_image.analysis.particles import measure_particles
 from gst_image.export import create_overlay, export_analysis
-from gst_image.models import ProjectManifest, SegmentationLayer
+from gst_image.models import (
+    AnalysisRun,
+    ParticleGroup,
+    ParticleGrouping,
+    ProjectManifest,
+    SegmentationLayer,
+    SegmentationRecipe,
+)
 
 
 def test_multiclass_overlay_and_fraction_export(tmp_path):
@@ -37,3 +45,78 @@ def test_multiclass_overlay_and_fraction_export(tmp_path):
     text = (destination / "fractions.csv").read_text(encoding="utf-8")
     assert "Zones: Weld" in text
     assert "Zones: HAZ" in text
+
+
+def test_saved_particle_grouping_exports_rules_assignments_statistics_and_overlay(tmp_path):
+    image = np.full((30, 40, 3), 80, np.uint8)
+    labels = np.zeros((30, 40), np.int32)
+    cv2.circle(labels, (10, 15), 4, 1, cv2.FILLED)
+    cv2.circle(labels, (28, 15), 7, 2, cv2.FILLED)
+    particles = measure_particles(labels)
+    manifest = ProjectManifest(
+        name="groups",
+        source_path=str(tmp_path / "source.png"),
+        source_sha256="0" * 64,
+        image_width=40,
+        image_height=30,
+    )
+    particle_class = next(item for item in manifest.classes if item.preset == "particle")
+    layer = SegmentationLayer(
+        name="Particles", kind="instances", class_id=particle_class.id
+    )
+    run = AnalysisRun(
+        recipe=SegmentationRecipe(),
+        layer_ids=[layer.id],
+        summary={"analyzed_pixels": 1200},
+    )
+    layer.source_run_id = run.id
+    grouping = ParticleGrouping(
+        name="Two sizes",
+        source_layer_id=layer.id,
+        groups=[
+            ParticleGroup(
+                name="Small",
+                color="#ff0000",
+                size_unit="px",
+                size_min=0,
+                size_max=5,
+                circularity_min=0,
+                circularity_max=1,
+            ),
+            ParticleGroup(
+                name="Large",
+                color="#00ff00",
+                size_unit="px",
+                size_min=5,
+                size_max=20,
+                circularity_min=0,
+                circularity_max=1,
+            ),
+        ],
+    )
+    manifest.layers.append(layer)
+    manifest.runs.append(run)
+    manifest.particle_records[layer.id] = particles
+    manifest.particle_groupings.append(grouping)
+    manifest.active_particle_groupings[layer.id] = grouping.id
+    original_labels = labels.copy()
+
+    destination = export_analysis(
+        tmp_path / "exported-groups",
+        manifest,
+        {layer.id: labels},
+        source_image=image,
+    )
+
+    assert (destination / "particle_grouping_definitions.csv").exists()
+    assert (destination / "particle_group_assignments.csv").exists()
+    assert (destination / "particle_group_statistics.csv").exists()
+    assert "Small" in (destination / "particle_group_statistics.csv").read_text(
+        encoding="utf-8"
+    )
+    overlay_files = list(destination.glob("particle_grouping_Two_sizes_*.png"))
+    assert overlay_files
+    grouped_overlay = cv2.imread(str(overlay_files[0]))
+    assert grouped_overlay[15, 10, 2] > grouped_overlay[15, 10, 1]
+    assert grouped_overlay[15, 28, 1] > grouped_overlay[15, 28, 2]
+    assert np.array_equal(labels, original_labels)

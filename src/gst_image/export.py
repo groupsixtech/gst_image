@@ -12,7 +12,13 @@ import numpy as np
 import pandas as pd
 import tifffile
 
-from gst_image.models import FractionResults, ParticleRecord, ProjectManifest
+from gst_image.analysis.groups import evaluate_particle_grouping, particle_group_statistics
+from gst_image.models import (
+    FractionResults,
+    ParticleGrouping,
+    ParticleRecord,
+    ProjectManifest,
+)
 
 
 def _hex_bgr(color: str) -> tuple[int, int, int]:
@@ -69,6 +75,210 @@ def create_overlay(
                 pixels += np.asarray(_hex_bgr(hex_color), dtype=np.float32) * layer.opacity
                 overlay_block[selected] = np.clip(pixels, 0, 255).astype(np.uint8)
     return overlay
+
+
+def create_particle_group_overlay(
+    image: np.ndarray,
+    labels: np.ndarray,
+    particles: Sequence[ParticleRecord],
+    grouping: ParticleGrouping,
+    *,
+    opacity: float = 0.6,
+) -> np.ndarray:
+    """Color an instance layer with one saved grouping without changing its labels."""
+    if image.ndim == 2:
+        overlay = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+    else:
+        overlay = image[:, :, :3].copy()
+    labels = np.asarray(labels)
+    if labels.shape != overlay.shape[:2]:
+        raise ValueError("Particle labels do not match the source image")
+    result = evaluate_particle_grouping(
+        list(particles), grouping, copy_records=False
+    )
+    maximum = max(0, int(labels.max()))
+    colors = np.zeros((maximum + 1, 3), dtype=np.uint8)
+    visible = np.zeros(maximum + 1, dtype=bool)
+    group_colors = {group.id: _hex_bgr(group.color) for group in grouping.groups}
+    for particle in result.particles:
+        if not 0 <= particle.label <= maximum:
+            continue
+        if particle.label in result.filtered_labels:
+            if grouping.show_filtered:
+                colors[particle.label] = _hex_bgr("#616161")
+                visible[particle.label] = True
+            continue
+        group_id = result.assignments.get(particle.label)
+        if group_id in group_colors:
+            colors[particle.label] = group_colors[group_id]
+            visible[particle.label] = True
+        elif grouping.show_unclassified:
+            colors[particle.label] = _hex_bgr("#9e9e9e")
+            visible[particle.label] = True
+    safe = np.clip(labels.astype(np.int64), 0, maximum)
+    selected = (labels >= 0) & (labels <= maximum) & visible[safe]
+    if np.any(selected):
+        pixels = overlay[selected].astype(np.float32)
+        pixels *= 1 - opacity
+        pixels += colors[safe[selected]].astype(np.float32) * opacity
+        overlay[selected] = np.clip(pixels, 0, 255).astype(np.uint8)
+    return overlay
+
+
+def _export_particle_groupings(
+    destination: Path,
+    manifest: ProjectManifest,
+    masks: Mapping[str, np.ndarray],
+    source_image: np.ndarray | None,
+) -> None:
+    definitions: list[dict] = []
+    assignments: list[dict] = []
+    statistics_rows: list[dict] = []
+    layers = {layer.id: layer for layer in manifest.layers}
+    runs = {run.id: run for run in manifest.runs}
+    for grouping in manifest.particle_groupings:
+        layer_id = grouping.source_layer_id
+        if layer_id is None or layer_id not in manifest.particle_records:
+            continue
+        layer = layers.get(layer_id)
+        records = manifest.particle_records[layer_id]
+        result = evaluate_particle_grouping(records, grouping, copy_records=False)
+        filter_values = (
+            grouping.filter_criteria.model_dump(mode="json")
+            if grouping.filter_criteria
+            else {}
+        )
+        for group in grouping.groups:
+            definitions.append(
+                {
+                    "grouping_id": grouping.id,
+                    "grouping": grouping.name,
+                    "analysis_layer_id": layer_id,
+                    "analysis_layer": layer.name if layer else layer_id,
+                    "group_id": group.id,
+                    "group": group.name,
+                    "color": group.color,
+                    "enabled": group.enabled,
+                    "size_metric": group.size_metric.value,
+                    "size_unit": group.size_unit,
+                    "size_min": group.size_min,
+                    "size_max": group.size_max,
+                    "circularity_min": group.circularity_min,
+                    "circularity_max": group.circularity_max,
+                    "filter_size_min": filter_values.get("size_min"),
+                    "filter_size_max": filter_values.get("size_max"),
+                    "filter_size_metric": filter_values.get("size_metric"),
+                    "filter_size_unit": filter_values.get("size_unit"),
+                    "filter_circularity_min": filter_values.get("circularity_min"),
+                    "filter_circularity_max": filter_values.get("circularity_max"),
+                    "show_filtered": grouping.show_filtered,
+                    "show_unclassified": grouping.show_unclassified,
+                }
+            )
+        if not grouping.groups:
+            definitions.append(
+                {
+                    "grouping_id": grouping.id,
+                    "grouping": grouping.name,
+                    "analysis_layer_id": layer_id,
+                    "analysis_layer": layer.name if layer else layer_id,
+                    "group_id": None,
+                    "group": None,
+                    "color": None,
+                    "enabled": None,
+                    "size_metric": filter_values.get("size_metric"),
+                    "size_unit": filter_values.get("size_unit"),
+                    "size_min": None,
+                    "size_max": None,
+                    "circularity_min": None,
+                    "circularity_max": None,
+                    "filter_size_min": filter_values.get("size_min"),
+                    "filter_size_max": filter_values.get("size_max"),
+                    "filter_size_metric": filter_values.get("size_metric"),
+                    "filter_size_unit": filter_values.get("size_unit"),
+                    "filter_circularity_min": filter_values.get("circularity_min"),
+                    "filter_circularity_max": filter_values.get("circularity_max"),
+                    "show_filtered": grouping.show_filtered,
+                    "show_unclassified": grouping.show_unclassified,
+                }
+            )
+        names = {group.id: group.name for group in grouping.groups}
+        for particle in result.particles:
+            group_id = result.assignments.get(particle.label)
+            filtered = particle.label in result.filtered_labels
+            assignments.append(
+                {
+                    "grouping_id": grouping.id,
+                    "grouping": grouping.name,
+                    "analysis_layer_id": layer_id,
+                    "analysis_layer": layer.name if layer else layer_id,
+                    "particle_label": particle.label,
+                    "included": not filtered,
+                    "filtered": filtered,
+                    "group_id": group_id,
+                    "group": (
+                        "Filtered out"
+                        if filtered
+                        else names.get(group_id, "Unclassified")
+                    ),
+                }
+            )
+        run = runs.get(layer.source_run_id) if layer else None
+        group_statistics = particle_group_statistics(
+            records,
+            grouping,
+            result,
+            analyzed_pixels=run.summary.get("analyzed_pixels") if run else None,
+            exclude_border_from_size=(
+                run.recipe.exclude_border_particles_from_size_stats if run else True
+            ),
+        )
+        for name, values in group_statistics.items():
+            statistics_rows.append(
+                {
+                    "grouping_id": grouping.id,
+                    "grouping": grouping.name,
+                    "analysis_layer_id": layer_id,
+                    "analysis_layer": layer.name if layer else layer_id,
+                    "group_id": values["group_id"],
+                    "group": name,
+                    "color": values["color"],
+                    "included": values["included"],
+                    "count": values["count"],
+                    "count_percent": values["count_percent"],
+                    "area_px": values["area_px"],
+                    "area_mm2": values["area_mm2"],
+                    "area_fraction": values["area_fraction"],
+                    "estimated_volume_fraction_percent": values[
+                        "estimated_volume_fraction_percent"
+                    ],
+                    "border_touching_count": values["border_touching_count"],
+                    "size_statistics_count": values["size_statistics_count"],
+                    **{f"size_{key}": value for key, value in values["size"].items()},
+                    **{
+                        f"circularity_{key}": value
+                        for key, value in values["circularity"].items()
+                    },
+                }
+            )
+        if source_image is not None and layer_id in masks:
+            grouped_overlay = create_particle_group_overlay(
+                source_image, masks[layer_id], records, grouping
+            )
+            filename = _safe_filename(f"particle_grouping_{grouping.name}_{grouping.id[:8]}")
+            cv2.imwrite(str(destination / f"{filename}.png"), grouped_overlay)
+    if definitions:
+        pd.DataFrame(definitions).to_csv(
+            destination / "particle_grouping_definitions.csv", index=False
+        )
+    if assignments:
+        pd.DataFrame(assignments).to_csv(
+            destination / "particle_group_assignments.csv", index=False
+        )
+    if statistics_rows:
+        pd.DataFrame(statistics_rows).to_csv(
+            destination / "particle_group_statistics.csv", index=False
+        )
 
 
 def export_analysis(
@@ -206,6 +416,7 @@ def export_analysis(
                 100 * group_table["area_fraction"]
             )
         group_table.to_csv(destination / "particle_groups.csv", index=False)
+    _export_particle_groupings(destination, manifest, masks, source_image)
     pd.DataFrame([item.model_dump() for item in manifest.measurements]).to_csv(
         destination / "measurements.csv", index=False
     )

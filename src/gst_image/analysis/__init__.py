@@ -2,7 +2,14 @@
 
 from .calibration import create_measurement
 from .fractions import compute_area_fractions, compute_project_fractions
-from .groups import assign_particle_groups, particle_group_summary
+from .groups import (
+    assign_particle_groups,
+    evaluate_particle_grouping,
+    generate_particle_groups,
+    particle_group_statistics,
+    particle_group_summary,
+    validate_particle_groups,
+)
 from .masks import build_analysis_mask, rasterize_roi, suggest_specimen_mask
 from .particles import measure_particles, segment_particles
 from .regions import classify_regions
@@ -14,9 +21,13 @@ __all__ = [
     "compute_area_fractions",
     "compute_project_fractions",
     "create_measurement",
+    "evaluate_particle_grouping",
+    "generate_particle_groups",
     "measure_particles",
+    "particle_group_statistics",
     "particle_group_summary",
     "rasterize_roi",
     "segment_particles",
     "suggest_specimen_mask",
+    "validate_particle_groups",
 ]

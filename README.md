@@ -52,10 +52,17 @@ not on `PATH`.
    mask brush/eraser or split/merge corrections. While a class seed, seed eraser, mask brush,
    or mask eraser is active, use `[` and `]` to decrease or increase its source-pixel radius.
    The pink canvas outline shows the active brush footprint.
-6. For macro zones, follow the [assisted region-classification guide](docs/region-classification.md)
+6. Open **Particle groups** with an instance layer selected to filter and partition measured
+   particles by equivalent radius, equivalent diameter, area, circularity, or a combination.
+   The dual-handle range bars update the image, particle table, plots, and per-group statistics
+   without rerunning segmentation. Generate equal-width size groups, circularity groups, or a
+   two-dimensional size/circularity grid, then edit group names, colors, and exact bounds before
+   saving the scheme to the project.
+7. For macro zones, follow the [assisted region-classification guide](docs/region-classification.md)
    to paint and erase example strokes for Weld, HAZ, Base, or custom classes and train the
    classifier.
-7. Save the project and export masks, overlays, measurements, fractions, and particle CSVs.
+8. Save the project and export masks, overlays, measurements, fractions, particle CSVs, saved
+   grouping definitions, particle assignments, group statistics, and color grouping overlays.
 
 Analysis values have linked sliders and numeric fields for quick tuning and exact entry.
 Calibrated measurements are shown in both physical and pixel units. Layers, ROIs,
@@ -91,6 +98,20 @@ morphological watershed, pre-blur, rolling-ball correction, opening/closing, flo
 particle filters, touching-particle watershed, tile size, and brush size. These actions leave
 the class, channel, segmentation/threshold methods, polarity, preview mode, ROI scope, and
 overview/ROI resolutions unchanged.
+
+Particle grouping filters are post-analysis and non-destructive. They only control which
+measured instances are included in a saved grouping result; the original instance labels and
+segmentation mask remain unchanged. This is different from the segmentation recipe's minimum
+and maximum particle-area filters, which discard components while segmentation is running.
+When both size and circularity filtering are enabled, both conditions must match. Adjacent
+generated groups use non-overlapping boundaries, with the outermost upper boundary included.
+Filtered and unclassified particles can independently be hidden or shown in grey.
+
+Every saved grouping is tied to its source particle layer. Its statistics include counts,
+count percentage, total area, analyzed-domain area/estimated volume fraction, border-particle
+count, and size/circularity distributions. Saved schemes are exported to
+`particle_grouping_definitions.csv`, `particle_group_assignments.csv`, and
+`particle_group_statistics.csv`; color grouping overlays are exported as PNG files.
 
 The **Morphological watershed** segmentation option is based on the ImageJ/MorphoLibJ
 [Morphological Segmentation](https://imagej.net/plugins/morphological-segmentation) pipeline.

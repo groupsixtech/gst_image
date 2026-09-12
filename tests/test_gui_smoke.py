@@ -1,8 +1,14 @@
+import cv2
+import numpy as np
 from gst_image_app.mainwindow import MainWindow
+from gst_image_app.range_slider import MetricRangeControl
 
+from gst_image.analysis.particles import measure_particles
 from gst_image.models import (
     MorphologicalGradient,
     MorphologicalInput,
+    ProjectManifest,
+    SegmentationLayer,
     SegmentationMethod,
     SegmentationRecipe,
     ThresholdMethod,
@@ -36,6 +42,76 @@ def test_analysis_sliders_and_spin_boxes_stay_synchronized(qtbot):
         100,
     )
     assert (window.roi_resolution.minimum(), window.roi_resolution.maximum()) == (0, 100)
+
+
+def test_dual_range_slider_and_exact_fields_stay_synchronized(qtbot):
+    control = MetricRangeControl()
+    qtbot.addWidget(control)
+    control.set_domain(0, 20, suffix=" px")
+    control.slider.setValues(2500, 7500)
+    assert control.lower.value() == 5
+    assert control.upper.value() == 15
+    control.lower.setValue(8)
+    assert control.slider.values()[0] == 4000
+
+
+def test_particle_grouping_panel_previews_filters_colors_and_saves(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    labels = np.zeros((60, 80), np.int32)
+    cv2.circle(labels, (20, 30), 5, 1, cv2.FILLED)
+    cv2.circle(labels, (55, 30), 10, 2, cv2.FILLED)
+    particles = measure_particles(labels)
+    manifest = ProjectManifest(
+        name="group GUI",
+        source_path="source.png",
+        source_sha256="0" * 64,
+        image_width=80,
+        image_height=60,
+    )
+    layer = SegmentationLayer(name="Particles", kind="instances")
+    manifest.layers.append(layer)
+    manifest.particle_records[layer.id] = particles
+    window.manifest = manifest
+    window.current_layer_id = layer.id
+    window.current_labels = labels.copy()
+    window.current_mask = (labels > 0).astype(np.uint8)
+    window.layer_masks[layer.id] = labels.copy()
+    window.particles = particles
+    window.canvas.set_image(np.zeros((60, 80, 3), np.uint8), (80, 60))
+    window._refresh_all()
+
+    panel = window.grouping_panel
+    assert panel.isEnabled()
+    panel.size_bins.setValue(2)
+    panel.circularity_bins.setValue(1)
+    panel._generate_groups()
+    qtbot.wait(150)
+
+    assert window.grouping_preview is not None
+    assert len(panel.current_grouping().groups) == 2
+    assert len({group.color for group in panel.current_grouping().groups}) == 2
+    overlay = window.canvas._overlay_item.pixmap().toImage()
+    left_color = overlay.pixelColor(20, 30)
+    right_color = overlay.pixelColor(55, 30)
+    assert left_color != right_color
+    panel.filter_box.setChecked(True)
+    panel.filter_size.setChecked(True)
+    maximum = max(particle.equivalent_radius_px for particle in particles)
+    panel.filter_size_range.set_values(maximum - 0.1, maximum)
+    panel._filter_changed()
+    qtbot.wait(150)
+    assert len(window.grouping_preview.included_labels) == 1
+    filtered_overlay = window.canvas._overlay_item.pixmap().toImage()
+    assert filtered_overlay.pixelColor(20, 30).alpha() == 0
+    assert filtered_overlay.pixelColor(55, 30).alpha() > 0
+
+    grouping = panel.current_grouping()
+    window._save_particle_grouping(grouping)
+    assert manifest.active_particle_groupings[layer.id] == grouping.id
+    assert manifest.particle_groupings[0].name == grouping.name
+    assert np.array_equal(window.layer_masks[layer.id], labels)
+    window._set_dirty(False)
 
 
 def test_threshold_method_shows_only_applicable_controls(qtbot):

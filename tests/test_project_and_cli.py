@@ -9,6 +9,8 @@ from gst_image.cli import _recipe, analyze_image, main
 from gst_image.image_io import sha256_file
 from gst_image.models import (
     AnalysisRun,
+    ParticleGroup,
+    ParticleGrouping,
     ParticlePolarity,
     ProjectManifest,
     SegmentationLayer,
@@ -49,6 +51,44 @@ def test_project_roundtrip_and_source_hash_validation(tmp_path):
     relink_source(loaded, source)
     assert loaded.source_revision == 2
     assert loaded.layers == []
+
+
+def test_particle_grouping_scheme_roundtrips_with_active_layer(tmp_path):
+    source = tmp_path / "source.png"
+    cv2.imwrite(str(source), np.full((12, 16), 100, np.uint8))
+    layer = SegmentationLayer(name="Particles", kind="instances")
+    grouping = ParticleGrouping(
+        name="Round particles",
+        source_layer_id=layer.id,
+        show_filtered=True,
+        groups=[
+            ParticleGroup(
+                name="Fine",
+                color="#123456",
+                size_unit="px",
+                size_min=0,
+                size_max=4,
+                circularity_min=0.75,
+                circularity_max=1,
+            )
+        ],
+    )
+    manifest = ProjectManifest(
+        name="roundtrip grouping",
+        source_path=str(source),
+        source_sha256=sha256_file(source),
+        image_width=16,
+        image_height=12,
+        layers=[layer],
+        particle_groupings=[grouping],
+        active_particle_groupings={layer.id: grouping.id},
+    )
+
+    project = save_project(tmp_path / "grouping.gstproj", manifest)
+    loaded, _ = load_project(project)
+
+    assert loaded.particle_groupings == [grouping]
+    assert loaded.active_particle_groupings[layer.id] == grouping.id
 
 
 def test_cli_analysis_creates_reopenable_project(tmp_path):
@@ -159,7 +199,7 @@ def test_version_one_project_migrates_all_recipes_without_changing_masks(tmp_pat
     manifest_path.write_text(json.dumps(payload), encoding="utf-8")
 
     loaded, masks = load_project(project)
-    assert loaded.schema_version == 2
+    assert loaded.schema_version == 3
     assert (loaded.recipes[0].manual_threshold_low, loaded.recipes[0].manual_threshold_high) == (
         0,
         100,
@@ -172,6 +212,60 @@ def test_version_one_project_migrates_all_recipes_without_changing_masks(tmp_pat
 
     save_project(project, loaded, masks, source_override=source)
     saved = json.loads(manifest_path.read_text(encoding="utf-8"))
-    assert saved["schema_version"] == 2
+    assert saved["schema_version"] == 3
     assert "manual_threshold" not in saved["recipes"][0]
     assert "manual_threshold" not in saved["runs"][0]["recipe"]
+
+
+def test_version_two_global_groups_migrate_to_layer_scoped_scheme(tmp_path):
+    source = tmp_path / "source.png"
+    cv2.imwrite(str(source), np.full((8, 10), 100, np.uint8))
+    layer = SegmentationLayer(name="Particles", kind="instances")
+    manifest = ProjectManifest(
+        name="legacy groups",
+        source_path=str(source),
+        source_sha256=sha256_file(source),
+        image_width=10,
+        image_height=8,
+        layers=[layer],
+        groups=[
+            ParticleGroup(
+                name="Small",
+                radius_unit="px",
+                radius_min=0,
+                radius_max=5,
+                circularity_min=0.5,
+                circularity_max=1,
+            )
+        ],
+    )
+    project = save_project(tmp_path / "legacy-groups.gstproj", manifest)
+    manifest_path = project / "project.json"
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload["schema_version"] = 2
+    payload["groups"] = [
+        {
+            "name": "Small",
+            "color": "#123456",
+            "radius_unit": "px",
+            "radius_min": 0,
+            "radius_max": 5,
+            "circularity_min": 0.5,
+            "circularity_max": 1,
+        }
+    ]
+    payload.pop("particle_groupings")
+    payload.pop("active_particle_groupings")
+    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    loaded, _ = load_project(project)
+
+    assert loaded.schema_version == 3
+    assert loaded.groups == []
+    assert len(loaded.particle_groupings) == 1
+    grouping = loaded.particle_groupings[0]
+    assert grouping.source_layer_id == layer.id
+    assert grouping.groups[0].size_unit == "px"
+    assert grouping.groups[0].size_min == 0
+    assert grouping.groups[0].size_max == 5
+    assert loaded.active_particle_groupings[layer.id] == grouping.id

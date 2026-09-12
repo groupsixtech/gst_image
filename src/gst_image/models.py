@@ -12,7 +12,7 @@ from typing import Any, Literal
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-PROJECT_SCHEMA_VERSION = 2
+PROJECT_SCHEMA_VERSION = 3
 
 
 def _id() -> str:
@@ -130,6 +130,12 @@ class MorphologicalGradient(StrEnum):
 class ParticlePolarity(StrEnum):
     DARK = "dark"
     BRIGHT = "bright"
+
+
+class ParticleSizeMetric(StrEnum):
+    EQUIVALENT_RADIUS = "equivalent_radius"
+    EQUIVALENT_DIAMETER = "equivalent_diameter"
+    AREA = "area"
 
 
 class SegmentationRecipe(BaseModel):
@@ -264,23 +270,42 @@ class ParticleRecord(BaseModel):
     group: str = "Unclassified"
 
 
-class ParticleGroup(BaseModel):
-    name: str
-    color: str = "#ffee58"
-    radius_unit: Literal["mm", "px"] = "mm"
-    radius_min: float | None = Field(default=None, ge=0)
-    radius_max: float | None = Field(default=None, ge=0)
-    circularity_min: float | None = Field(default=None, ge=0)
-    circularity_max: float | None = Field(default=None, ge=0)
+class ParticleCriteria(BaseModel):
+    size_metric: ParticleSizeMetric = ParticleSizeMetric.EQUIVALENT_RADIUS
+    size_unit: Literal["mm", "px"] = "mm"
+    size_min: float | None = Field(default=None, ge=0)
+    size_max: float | None = Field(default=None, ge=0)
+    circularity_min: float | None = Field(default=None, ge=0, le=1)
+    circularity_max: float | None = Field(default=None, ge=0, le=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_radius_fields(cls, data: Any) -> Any:
+        """Accept project-v2 radius fields and the former public constructor."""
+        if not isinstance(data, dict):
+            return data
+        values = dict(data)
+        if "radius_unit" in values:
+            values.setdefault("size_unit", values.pop("radius_unit"))
+        if "radius_min" in values:
+            values.setdefault("size_min", values.pop("radius_min"))
+        if "radius_max" in values:
+            values.setdefault("size_max", values.pop("radius_max"))
+        return values
 
     @model_validator(mode="after")
-    def validate_bounds(self) -> ParticleGroup:
+    def validate_bounds(self) -> ParticleCriteria:
         if (
-            self.radius_min is not None
-            and self.radius_max is not None
-            and self.radius_max < self.radius_min
+            self.size_min is not None
+            and self.size_max is not None
+            and self.size_max < self.size_min
         ):
-            raise ValueError("Maximum radius must be at least the minimum")
+            label = (
+                "radius"
+                if self.size_metric == ParticleSizeMetric.EQUIVALENT_RADIUS
+                else "size"
+            )
+            raise ValueError(f"Maximum {label} must be at least the minimum")
         if (
             self.circularity_min is not None
             and self.circularity_max is not None
@@ -289,29 +314,125 @@ class ParticleGroup(BaseModel):
             raise ValueError("Maximum circularity must be at least the minimum")
         return self
 
-    def matches(self, particle: ParticleRecord, *, final: bool = False) -> bool:
-        radius = (
-            particle.equivalent_radius_mm
-            if self.radius_unit == "mm"
-            else particle.equivalent_radius_px
-        )
-        if radius is None:
+    def size_value(self, particle: ParticleRecord) -> float | None:
+        calibrated = self.size_unit == "mm"
+        if self.size_metric == ParticleSizeMetric.EQUIVALENT_RADIUS:
+            return (
+                particle.equivalent_radius_mm
+                if calibrated
+                else particle.equivalent_radius_px
+            )
+        if self.size_metric == ParticleSizeMetric.EQUIVALENT_DIAMETER:
+            return (
+                particle.equivalent_diameter_mm
+                if calibrated
+                else particle.equivalent_diameter_px
+            )
+        return particle.area_mm2 if calibrated else particle.area_px
+
+    def matches(
+        self,
+        particle: ParticleRecord,
+        *,
+        include_size_upper: bool = True,
+        include_circularity_upper: bool = True,
+    ) -> bool:
+        size = self.size_value(particle)
+        if (self.size_min is not None or self.size_max is not None) and size is None:
             return False
-        if self.radius_min is not None and radius < self.radius_min:
+        if (
+            self.size_min is not None
+            and size is not None
+            and size < self.size_min
+            and not math.isclose(size, self.size_min, rel_tol=1e-9, abs_tol=1e-12)
+        ):
             return False
-        if self.radius_max is not None:
-            if final and radius > self.radius_max:
+        if self.size_max is not None and size is not None:
+            if (
+                include_size_upper
+                and size > self.size_max
+                and not math.isclose(size, self.size_max, rel_tol=1e-9, abs_tol=1e-12)
+            ):
                 return False
-            if not final and radius >= self.radius_max:
+            if not include_size_upper and size >= self.size_max:
                 return False
-        if self.circularity_min is not None and particle.circularity < self.circularity_min:
+        if (
+            self.circularity_min is not None
+            and particle.circularity < self.circularity_min
+            and not math.isclose(
+                particle.circularity,
+                self.circularity_min,
+                rel_tol=1e-9,
+                abs_tol=1e-12,
+            )
+        ):
             return False
         if self.circularity_max is not None:
-            if final and particle.circularity > self.circularity_max:
+            if (
+                include_circularity_upper
+                and particle.circularity > self.circularity_max
+                and not math.isclose(
+                    particle.circularity,
+                    self.circularity_max,
+                    rel_tol=1e-9,
+                    abs_tol=1e-12,
+                )
+            ):
                 return False
-            if not final and particle.circularity >= self.circularity_max:
+            if not include_circularity_upper and particle.circularity >= self.circularity_max:
                 return False
         return True
+
+    @property
+    def radius_unit(self) -> Literal["mm", "px"]:
+        return self.size_unit
+
+    @property
+    def radius_min(self) -> float | None:
+        return self.size_min
+
+    @property
+    def radius_max(self) -> float | None:
+        return self.size_max
+
+
+class ParticleGroup(ParticleCriteria):
+    id: str = Field(default_factory=_id)
+    name: str
+    color: str = Field(default="#ffee58", pattern=r"^#[0-9A-Fa-f]{6}$")
+    enabled: bool = True
+
+    def matches(
+        self,
+        particle: ParticleRecord,
+        *,
+        final: bool = False,
+        include_size_upper: bool | None = None,
+        include_circularity_upper: bool | None = None,
+    ) -> bool:
+        return self.enabled and super().matches(
+            particle,
+            include_size_upper=(
+                final if include_size_upper is None else include_size_upper
+            ),
+            include_circularity_upper=(
+                final
+                if include_circularity_upper is None
+                else include_circularity_upper
+            ),
+        )
+
+
+class ParticleGrouping(BaseModel):
+    id: str = Field(default_factory=_id)
+    name: str = "Particle grouping"
+    source_layer_id: str | None = None
+    filter_criteria: ParticleCriteria | None = None
+    groups: list[ParticleGroup] = Field(default_factory=list)
+    show_filtered: bool = False
+    show_unclassified: bool = True
+    created_at: datetime = Field(default_factory=_now)
+    updated_at: datetime = Field(default_factory=_now)
 
 
 class Measurement(BaseModel):
@@ -372,7 +493,10 @@ class ProjectManifest(BaseModel):
     region_recipes: list[RegionClassifierRecipe] = Field(default_factory=list)
     layers: list[SegmentationLayer] = Field(default_factory=list)
     measurements: list[Measurement] = Field(default_factory=list)
+    # Retained for loading/API compatibility. New GUI work is stored as layer-scoped schemes.
     groups: list[ParticleGroup] = Field(default_factory=list)
+    particle_groupings: list[ParticleGrouping] = Field(default_factory=list)
+    active_particle_groupings: dict[str, str] = Field(default_factory=dict)
     runs: list[AnalysisRun] = Field(default_factory=list)
     edits: list[EditEvent] = Field(default_factory=list)
     training_strokes: list[TrainingStroke] = Field(default_factory=list)

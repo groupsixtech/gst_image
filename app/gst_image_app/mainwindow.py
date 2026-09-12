@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import cv2
@@ -47,16 +46,17 @@ from PySide6.QtWidgets import (
 )
 
 from gst_image.analysis import (
-    assign_particle_groups,
     build_analysis_mask,
     classify_regions,
     compute_project_fractions,
     create_measurement,
+    evaluate_particle_grouping,
     measure_particles,
+    particle_group_statistics,
     segment_particles,
     suggest_specimen_mask,
 )
-from gst_image.analysis.groups import particle_group_summary
+from gst_image.analysis.groups import ParticleGroupingResult
 from gst_image.analysis.particles import merge_particle_labels, split_particle_by_line
 from gst_image.analysis.preprocess import to_gray
 from gst_image.analysis.regions import REGION_CLASSIFICATION_MAX_PIXELS
@@ -75,7 +75,7 @@ from gst_image.models import (
     EditEvent,
     MorphologicalGradient,
     MorphologicalInput,
-    ParticleGroup,
+    ParticleGrouping,
     ParticlePolarity,
     Point,
     ProjectManifest,
@@ -95,6 +95,7 @@ from gst_image.project import (
     validate_project,
 )
 from gst_image_app.canvas import ImageCanvas
+from gst_image_app.particle_grouping import ParticleGroupingPanel
 from gst_image_app.workers import FunctionWorker
 
 
@@ -422,6 +423,9 @@ class MainWindow(QMainWindow):
         self.manifest: ProjectManifest | None = None
         self.layer_masks: dict[str, np.ndarray] = {}
         self.particles = []
+        self.grouping_preview: ParticleGroupingResult | None = None
+        self.grouping_preview_definition: ParticleGrouping | None = None
+        self._pending_grouping_preview: ParticleGrouping | None = None
         self.selected_labels: set[int] = set()
         self.run_scope_ids: list[str] = []
         self.run_recipe: SegmentationRecipe | None = None
@@ -440,6 +444,10 @@ class MainWindow(QMainWindow):
         self.mask_commit_timer.setSingleShot(True)
         self.mask_commit_timer.setInterval(250)
         self.mask_commit_timer.timeout.connect(self._commit_mask_edits)
+        self.grouping_preview_timer = QTimer(self)
+        self.grouping_preview_timer.setSingleShot(True)
+        self.grouping_preview_timer.setInterval(100)
+        self.grouping_preview_timer.timeout.connect(self._apply_pending_grouping_preview)
         self.statusBar().showMessage("Open a micrograph or project to begin")
 
     def _build_actions(self) -> None:
@@ -895,7 +903,7 @@ class MainWindow(QMainWindow):
         tabs.addTab(self.summary, "Summary")
         self.particle_table = QTableWidget(0, 7)
         self.particle_table.setHorizontalHeaderLabels(
-            ["Label", "Radius", "Circularity", "Area px²", "Solidity", "Border", "Group"]
+            ["Label", "Size", "Circularity", "Area px²", "Solidity", "Border", "Group"]
         )
         self.particle_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         tabs.addTab(self.particle_table, "Particles")
@@ -937,29 +945,17 @@ class MainWindow(QMainWindow):
         self.delete_measurements_button.clicked.connect(self.delete_selected_measurements)
         measurement_layout.addWidget(self.delete_measurements_button)
         tabs.addTab(measurement_panel, "Measurements")
-        group_panel = QWidget()
-        group_layout = QVBoxLayout(group_panel)
-        self.groups_table = QTableWidget(0, 5)
-        self.groups_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.groups_table.setHorizontalHeaderLabels(
-            ["Name", "Min radius", "Max radius", "Min circularity", "Max circularity"]
-        )
-        group_layout.addWidget(self.groups_table)
-        buttons = QHBoxLayout()
-        add_group = QPushButton("Add")
-        add_group.clicked.connect(self.add_group)
-        apply_groups = QPushButton("Apply")
-        apply_groups.clicked.connect(self.apply_groups)
-        plot_groups = QPushButton("Plot")
-        plot_groups.clicked.connect(self.plot_particles)
-        delete_groups = QPushButton("Delete selected")
-        delete_groups.clicked.connect(self.delete_selected_groups)
-        buttons.addWidget(add_group)
-        buttons.addWidget(apply_groups)
-        buttons.addWidget(plot_groups)
-        buttons.addWidget(delete_groups)
-        group_layout.addLayout(buttons)
-        tabs.addTab(group_panel, "Groups")
+        self.grouping_panel = ParticleGroupingPanel()
+        self.grouping_panel.draftChanged.connect(self._queue_grouping_preview)
+        self.grouping_panel.saveRequested.connect(self._save_particle_grouping)
+        self.grouping_panel.deleteRequested.connect(self._delete_particle_grouping)
+        self.grouping_panel.plotRequested.connect(self.plot_particles)
+        # Compatibility alias for callers that previously accessed the simple group table.
+        self.groups_table = self.grouping_panel.groups_table
+        group_scroll = QScrollArea()
+        group_scroll.setWidgetResizable(True)
+        group_scroll.setWidget(self.grouping_panel)
+        tabs.addTab(group_scroll, "Particle groups")
         dock.setWidget(tabs)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
 
@@ -1322,6 +1318,11 @@ class MainWindow(QMainWindow):
         self.current_layer_id = None
         self.layer_masks.clear()
         self.particles = []
+        self.grouping_preview = None
+        self.grouping_preview_definition = None
+        self._pending_grouping_preview = None
+        if hasattr(self, "grouping_preview_timer"):
+            self.grouping_preview_timer.stop()
         self.manifest = ProjectManifest(
             name=path.stem,
             source_path=str(self.current_path),
@@ -1373,6 +1374,11 @@ class MainWindow(QMainWindow):
         self.current_labels = None
         self.current_layer_id = None
         self.particles = []
+        self.grouping_preview = None
+        self.grouping_preview_definition = None
+        self._pending_grouping_preview = None
+        if hasattr(self, "grouping_preview_timer"):
+            self.grouping_preview_timer.stop()
         self.selected_labels.clear()
         self._set_canvas_image(preview)
         particle_layer = next((layer for layer in manifest.layers if layer.kind == "instances"), None)
@@ -1839,7 +1845,7 @@ class MainWindow(QMainWindow):
         self.analysis_mask = domain
         self.current_mask = result.mask.astype(np.uint8)
         self.current_labels = result.labels
-        self.particles = assign_particle_groups(result.particles, self.manifest.groups)
+        self.particles = result.particles
         target_class = next(
             (
                 item
@@ -1894,6 +1900,16 @@ class MainWindow(QMainWindow):
         self.layer_masks[layer.id] = self.current_labels
         self.layer_masks[domain_layer.id] = self.analysis_mask.astype(np.uint8)
         self.current_layer_id = layer.id
+        active_grouping = self._active_particle_grouping(layer.id)
+        if active_grouping:
+            self.grouping_preview_definition = active_grouping.model_copy(deep=True)
+            self.grouping_preview = evaluate_particle_grouping(
+                self.particles, active_grouping
+            )
+            self.particles = self.grouping_preview.particles
+        else:
+            self.grouping_preview = None
+            self.grouping_preview_definition = None
         self.manifest.particle_records[layer.id] = self.particles
         self._render_visible_layers()
         self._show_summary(result.summary)
@@ -2251,14 +2267,23 @@ class MainWindow(QMainWindow):
 
     def _labels_edited(self, action: str) -> None:
         self.current_mask = (self.current_labels > 0).astype(np.uint8)
-        self.particles = assign_particle_groups(
-            measure_particles(self.current_labels, self.manifest.calibration, self.analysis_mask),
-            self.manifest.groups,
+        self.particles = measure_particles(
+            self.current_labels, self.manifest.calibration, self.analysis_mask
         )
         layer = next(
             (item for item in self.manifest.layers if item.id == self.current_layer_id), None
         )
         if layer:
+            active_grouping = self._active_particle_grouping(layer.id)
+            if active_grouping:
+                self.grouping_preview_definition = active_grouping.model_copy(deep=True)
+                self.grouping_preview = evaluate_particle_grouping(
+                    self.particles, active_grouping
+                )
+                self.particles = self.grouping_preview.particles
+            else:
+                self.grouping_preview = None
+                self.grouping_preview_definition = None
             self.layer_masks[layer.id] = self.current_labels
             self.manifest.particle_records[layer.id] = self.particles
             self.manifest.edits.append(EditEvent(action=action, target_id=layer.id))
@@ -2302,12 +2327,20 @@ class MainWindow(QMainWindow):
         for layer_id in removed_ids:
             self.layer_masks.pop(layer_id, None)
             self.manifest.particle_records.pop(layer_id, None)
+            self.manifest.active_particle_groupings.pop(layer_id, None)
+        self.manifest.particle_groupings = [
+            grouping
+            for grouping in self.manifest.particle_groupings
+            if grouping.source_layer_id not in removed_ids
+        ]
         if self.current_layer_id in removed_ids:
             self.current_layer_id = None
             self.current_mask = None
             self.current_labels = None
             self.analysis_mask = None
             self.particles = []
+            self.grouping_preview = None
+            self.grouping_preview_definition = None
             self.selected_labels.clear()
         return removed_ids
 
@@ -2393,69 +2426,202 @@ class MainWindow(QMainWindow):
         self._set_dirty(True)
 
     def delete_selected_groups(self) -> None:
-        rows = sorted(
-            {index.row() for index in self.groups_table.selectionModel().selectedRows()},
-            reverse=True,
-        )
-        for row in rows:
-            self.groups_table.removeRow(row)
-        if rows:
-            self.apply_groups()
+        """Compatibility wrapper for the former group-table action."""
+        self.grouping_panel._remove_group()
 
     def add_group(self) -> None:
-        row = self.groups_table.rowCount()
-        self.groups_table.insertRow(row)
-        defaults = [f"Group {row + 1}", "", "", "", ""]
-        for column, value in enumerate(defaults):
-            self.groups_table.setItem(row, column, QTableWidgetItem(value))
+        """Compatibility wrapper for the former group-table action."""
+        self.grouping_panel._add_group()
 
     def apply_groups(self) -> None:
-        groups: list[ParticleGroup] = []
-        unit = "mm" if self.manifest and self.manifest.calibration else "px"
-        try:
-            for row in range(self.groups_table.rowCount()):
-                values = [
-                    self.groups_table.item(row, column).text().strip()
-                    if self.groups_table.item(row, column)
-                    else ""
-                    for column in range(5)
-                ]
-                groups.append(
-                    ParticleGroup(
-                        name=values[0] or f"Group {row + 1}",
-                        radius_unit=unit,
-                        radius_min=float(values[1]) if values[1] else None,
-                        radius_max=float(values[2]) if values[2] else None,
-                        circularity_min=float(values[3]) if values[3] else None,
-                        circularity_max=float(values[4]) if values[4] else None,
-                    )
-                )
-        except ValueError as error:
-            QMessageBox.warning(self, "Invalid groups", str(error))
-            return
-        self.manifest.groups = groups
-        self.particles = assign_particle_groups(self.particles, groups)
-        layer = next(
-            (item for item in self.manifest.layers if item.id == self.current_layer_id), None
+        """Compatibility wrapper: save the current draft as a grouping scheme."""
+        grouping = self.grouping_panel.current_grouping()
+        if grouping:
+            self._save_particle_grouping(grouping)
+
+    def _active_particle_grouping(
+        self, layer_id: str | None = None
+    ) -> ParticleGrouping | None:
+        if self.manifest is None:
+            return None
+        layer_id = layer_id or self.current_layer_id
+        if layer_id is None:
+            return None
+        grouping_id = self.manifest.active_particle_groupings.get(layer_id)
+        return next(
+            (
+                grouping
+                for grouping in self.manifest.particle_groupings
+                if grouping.id == grouping_id and grouping.source_layer_id == layer_id
+            ),
+            None,
         )
-        if layer:
-            self.manifest.particle_records[layer.id] = self.particles
-        group_values = {group.name: index + 1 for index, group in enumerate(groups)}
-        unclassified_value = len(groups) + 1
-        label_groups = {
-            particle.label: group_values.get(particle.group, unclassified_value)
-            for particle in self.particles
-        }
-        colors = {
-            index + 1: self._class_rgb(group.color) for index, group in enumerate(groups)
-        }
-        colors[unclassified_value] = (158, 158, 158)
-        if self.current_labels is not None:
-            self.canvas.set_particle_group_overlay(
-                self.current_labels, label_groups, colors
-            )
+
+    def _queue_grouping_preview(self, grouping: ParticleGrouping) -> None:
+        if grouping.source_layer_id != self.current_layer_id:
+            return
+        self._pending_grouping_preview = grouping
+        self.grouping_preview_timer.start()
+
+    def _apply_pending_grouping_preview(self) -> None:
+        grouping = self._pending_grouping_preview
+        self._pending_grouping_preview = None
+        if grouping is not None:
+            self._preview_particle_grouping(grouping)
+
+    def _preview_particle_grouping(self, grouping: ParticleGrouping) -> None:
+        if (
+            self.manifest is None
+            or self.current_layer_id is None
+            or grouping.source_layer_id != self.current_layer_id
+        ):
+            return
+        source_particles = self.manifest.particle_records.get(
+            self.current_layer_id, self.particles
+        )
+        result = evaluate_particle_grouping(
+            source_particles, grouping, copy_records=False
+        )
+        self.grouping_preview_definition = grouping.model_copy(deep=True)
+        self.grouping_preview = result
+        analyzed_pixels, exclude_border = self._grouping_statistics_context()
+        statistics = particle_group_statistics(
+            source_particles,
+            grouping,
+            result,
+            analyzed_pixels=analyzed_pixels,
+            exclude_border_from_size=exclude_border,
+        )
+        self.grouping_panel.set_statistics(statistics)
+        self.grouping_panel.set_preview_counts(
+            len(result.included_labels),
+            len(source_particles),
+            len(result.unclassified_labels),
+        )
         self._refresh_particles()
-        self.summary.setText(self.summary.text() + "\n\nGroups:\n" + json.dumps(particle_group_summary(self.particles), indent=2))
+        self._render_visible_layers()
+
+    def _grouping_statistics_context(self) -> tuple[int | None, bool]:
+        if self.manifest is None or self.current_layer_id is None:
+            return None, True
+        layer = next(
+            (item for item in self.manifest.layers if item.id == self.current_layer_id),
+            None,
+        )
+        run = next(
+            (
+                item
+                for item in self.manifest.runs
+                if layer is not None and item.id == layer.source_run_id
+            ),
+            None,
+        )
+        if run is None:
+            return None, True
+        return (
+            run.summary.get("analyzed_pixels"),
+            run.recipe.exclude_border_particles_from_size_stats,
+        )
+
+    def _save_particle_grouping(self, grouping: ParticleGrouping) -> None:
+        if self.manifest is None or self.current_layer_id is None:
+            return
+        self.grouping_preview_timer.stop()
+        self._pending_grouping_preview = None
+        grouping.source_layer_id = self.current_layer_id
+        existing = next(
+            (
+                index
+                for index, value in enumerate(self.manifest.particle_groupings)
+                if value.id == grouping.id
+            ),
+            None,
+        )
+        if existing is None:
+            self.manifest.particle_groupings.append(grouping)
+        else:
+            self.manifest.particle_groupings[existing] = grouping
+        self.manifest.active_particle_groupings[self.current_layer_id] = grouping.id
+        source_particles = self.manifest.particle_records.get(
+            self.current_layer_id, self.particles
+        )
+        self.grouping_preview_definition = grouping.model_copy(deep=True)
+        self.grouping_preview = evaluate_particle_grouping(source_particles, grouping)
+        self.particles = self.grouping_preview.particles
+        self.manifest.particle_records[self.current_layer_id] = self.particles
+        self.manifest.edits.append(
+            EditEvent(
+                action="save_particle_grouping",
+                target_id=grouping.id,
+                details={"source_layer_id": self.current_layer_id},
+            )
+        )
+        self._refresh_grouping_panel()
+        self._refresh_particles()
+        self._render_visible_layers()
+        self._set_dirty(True)
+        self.statusBar().showMessage(
+            f"Saved particle grouping {grouping.name!r} to the project; "
+            "save the project to write it to disk",
+            5000,
+        )
+
+    def _delete_particle_grouping(self, grouping_id: str) -> None:
+        if self.manifest is None:
+            return
+        self.grouping_preview_timer.stop()
+        self._pending_grouping_preview = None
+        removed = next(
+            (
+                grouping
+                for grouping in self.manifest.particle_groupings
+                if grouping.id == grouping_id
+            ),
+            None,
+        )
+        if removed is None:
+            return
+        self.manifest.particle_groupings = [
+            grouping
+            for grouping in self.manifest.particle_groupings
+            if grouping.id != grouping_id
+        ]
+        if removed.source_layer_id and self.manifest.active_particle_groupings.get(
+            removed.source_layer_id
+        ) == grouping_id:
+            self.manifest.active_particle_groupings.pop(removed.source_layer_id, None)
+            if removed.source_layer_id == self.current_layer_id:
+                replacement = next(
+                    (
+                        grouping
+                        for grouping in self.manifest.particle_groupings
+                        if grouping.source_layer_id == self.current_layer_id
+                    ),
+                    None,
+                )
+                if replacement:
+                    self.manifest.active_particle_groupings[
+                        self.current_layer_id
+                    ] = replacement.id
+                    self.grouping_preview_definition = replacement.model_copy(deep=True)
+                    self.grouping_preview = evaluate_particle_grouping(
+                        self.particles, replacement
+                    )
+                    self.particles = self.grouping_preview.particles
+                else:
+                    self.grouping_preview = None
+                    self.grouping_preview_definition = None
+                    self.particles = [
+                        particle.model_copy(update={"group": "Unclassified"})
+                        for particle in self.particles
+                    ]
+                self.manifest.particle_records[self.current_layer_id] = self.particles
+        self.manifest.edits.append(
+            EditEvent(action="delete_particle_grouping", target_id=grouping_id)
+        )
+        self._refresh_grouping_panel()
+        self._refresh_particles()
+        self._render_visible_layers()
         self._set_dirty(True)
 
     def plot_particles(self) -> None:
@@ -2466,27 +2632,99 @@ class MainWindow(QMainWindow):
         from PySide6.QtWidgets import QDialog
 
         dialog = QDialog(self)
-        dialog.setWindowTitle("Particle radius and circularity")
+        dialog.setWindowTitle("Particle size and circularity groups")
         dialog.resize(900, 500)
         layout = QVBoxLayout(dialog)
         figure = Figure(figsize=(9, 4))
         canvas = FigureCanvasQTAgg(figure)
         axes = figure.subplots(1, 2)
-        radii = [
-            p.equivalent_radius_mm if self.manifest.calibration else p.equivalent_radius_px
-            for p in self.particles
-        ]
-        axes[0].hist(radii, bins="auto")
-        axes[0].set_xlabel("Equivalent radius (mm)" if self.manifest.calibration else "Equivalent radius (px)")
+        grouping = self.grouping_preview_definition
+        result = self.grouping_preview
+        if grouping and result:
+            criteria = next(iter(grouping.groups), grouping.filter_criteria)
+            buckets: list[tuple[str, str, list]] = []
+            for group in grouping.groups:
+                records = [
+                    particle
+                    for particle in result.particles
+                    if result.assignments.get(particle.label) == group.id
+                ]
+                if group.enabled and records:
+                    buckets.append((group.name, group.color, records))
+            unclassified = [
+                particle
+                for particle in result.particles
+                if particle.label in result.unclassified_labels
+            ]
+            filtered = [
+                particle
+                for particle in result.particles
+                if particle.label in result.filtered_labels
+            ]
+            if grouping.show_unclassified and unclassified:
+                buckets.append(("Unclassified", "#9e9e9e", unclassified))
+            if grouping.show_filtered and filtered:
+                buckets.append(("Filtered out", "#616161", filtered))
+        else:
+            criteria = None
+            buckets = [("Particles", "#ffee58", self.particles)]
+        if criteria is None:
+            size_values = lambda particle: (
+                particle.equivalent_radius_mm
+                if self.manifest.calibration
+                else particle.equivalent_radius_px
+            )
+            x_label = (
+                "Equivalent radius (mm)"
+                if self.manifest.calibration
+                else "Equivalent radius (px)"
+            )
+        else:
+            size_values = criteria.size_value
+            metric_name = criteria.size_metric.value.replace("_", " ").title()
+            unit = criteria.size_unit + ("²" if criteria.size_metric.value == "area" else "")
+            x_label = f"{metric_name} ({unit})"
+        histogram_values = []
+        histogram_colors = []
+        histogram_labels = []
+        for name, color, records in buckets:
+            values = [value for particle in records if (value := size_values(particle)) is not None]
+            if not values:
+                continue
+            histogram_values.append(values)
+            histogram_colors.append(color)
+            histogram_labels.append(name)
+            axes[1].scatter(
+                values,
+                [particle.circularity for particle in records if size_values(particle) is not None],
+                s=10,
+                alpha=0.7,
+                color=color,
+                label=name,
+            )
+        if histogram_values:
+            axes[0].hist(
+                histogram_values,
+                bins="auto",
+                color=histogram_colors,
+                label=histogram_labels,
+                alpha=0.75,
+                stacked=True,
+            )
+        axes[0].set_xlabel(x_label)
         axes[0].set_ylabel("Count")
-        axes[1].scatter(radii, [p.circularity for p in self.particles], s=8, alpha=0.65)
-        axes[1].set_xlabel(axes[0].get_xlabel())
+        axes[1].set_xlabel(x_label)
         axes[1].set_ylabel("Circularity")
+        if len(buckets) > 1:
+            axes[0].legend(fontsize="small")
+            axes[1].legend(fontsize="small")
         figure.tight_layout()
         layout.addWidget(canvas)
         dialog.exec()
 
     def show_selected_layer(self, item: QListWidgetItem) -> None:
+        self.grouping_preview_timer.stop()
+        self._pending_grouping_preview = None
         layer_id = item.data(Qt.ItemDataRole.UserRole)
         layer = next((value for value in self.manifest.layers if value.id == layer_id), None)
         if layer is None or layer_id not in self.layer_masks:
@@ -2499,16 +2737,27 @@ class MainWindow(QMainWindow):
             self.current_layer_id = None
             self.current_labels = None
             self.current_mask = None
+            self.particles = []
         elif layer.kind == "multiclass":
             self.current_layer_id = layer.id
             self.current_labels = values.astype(np.int32)
             self.current_mask = None
+            self.particles = []
         else:
             self.current_layer_id = layer.id
             self.current_labels = values.astype(np.int32)
             self.current_mask = (self.current_labels > 0).astype(np.uint8)
             self.particles = self.manifest.particle_records.get(layer.id, [])
-            self._refresh_particles()
+        self.grouping_preview = None
+        self.grouping_preview_definition = None
+        active_grouping = self._active_particle_grouping()
+        if active_grouping and self.particles:
+            self.grouping_preview_definition = active_grouping.model_copy(deep=True)
+            self.grouping_preview = evaluate_particle_grouping(
+                self.particles, active_grouping
+            )
+        self._refresh_particles()
+        self._refresh_grouping_panel()
         self._render_visible_layers()
 
     def _render_visible_layers(self) -> None:
@@ -2529,6 +2778,29 @@ class MainWindow(QMainWindow):
                 }
             elif layer.kind == "domain":
                 colors = (158, 158, 158)
+            elif (
+                layer.kind == "instances"
+                and layer.id == self.current_layer_id
+                and self.grouping_preview is not None
+                and self.grouping_preview_definition is not None
+            ):
+                grouping = self.grouping_preview_definition
+                group_colors = {
+                    group.id: self._class_rgb(group.color)
+                    for group in grouping.groups
+                    if group.enabled
+                }
+                colors = {}
+                for particle in self.grouping_preview.particles:
+                    if particle.label in self.grouping_preview.filtered_labels:
+                        if grouping.show_filtered:
+                            colors[particle.label] = (97, 97, 97)
+                        continue
+                    group_id = self.grouping_preview.assignments.get(particle.label)
+                    if group_id in group_colors:
+                        colors[particle.label] = group_colors[group_id]
+                    elif grouping.show_unclassified:
+                        colors[particle.label] = (158, 158, 158)
             else:
                 class_definition = classes.get(layer.class_id)
                 colors = self._class_rgb(
@@ -2588,7 +2860,7 @@ class MainWindow(QMainWindow):
         self._refresh_rois()
         self._refresh_measurements()
         self._refresh_particles()
-        self._refresh_groups()
+        self._refresh_grouping_panel()
 
     def _trainable_classes(self) -> list[ClassDefinition]:
         if self.manifest is None:
@@ -2763,32 +3035,100 @@ class MainWindow(QMainWindow):
         self.canvas.set_annotations(lines)
 
     def _refresh_particles(self) -> None:
-        self.particle_table.setRowCount(len(self.particles))
+        records = (
+            self.grouping_preview.particles
+            if self.grouping_preview is not None
+            else self.particles
+        )
+        grouping = self.grouping_preview_definition
+        if grouping and self.grouping_preview and not grouping.show_filtered:
+            records = [
+                particle
+                for particle in records
+                if particle.label not in self.grouping_preview.filtered_labels
+            ]
         calibrated = bool(self.manifest and self.manifest.calibration)
-        for row, particle in enumerate(self.particles):
-            radius = particle.equivalent_radius_mm if calibrated else particle.equivalent_radius_px
+        criteria = (
+            next(iter(grouping.groups), grouping.filter_criteria) if grouping else None
+        )
+        if criteria:
+            metric_name = criteria.size_metric.value.replace("_", " ").title()
+            squared = "²" if criteria.size_metric.value == "area" else ""
+            self.particle_table.horizontalHeaderItem(1).setText(
+                f"{metric_name} ({criteria.size_unit}{squared})"
+            )
+        else:
+            self.particle_table.horizontalHeaderItem(1).setText(
+                "Equivalent radius (mm)" if calibrated else "Equivalent radius (px)"
+            )
+        self.particle_table.setRowCount(len(records))
+        for row, particle in enumerate(records):
+            size = (
+                criteria.size_value(particle)
+                if criteria
+                else (
+                    particle.equivalent_radius_mm
+                    if calibrated
+                    else particle.equivalent_radius_px
+                )
+            )
             values = [
                 str(particle.label),
-                f"{radius:.6g}",
+                "" if size is None else f"{size:.6g}",
                 f"{particle.circularity:.4f}",
                 f"{particle.area_px:.0f}",
                 f"{particle.solidity:.4f}",
                 "yes" if particle.border_touching else "no",
-                particle.group,
+                (
+                    self.grouping_preview.group_names.get(particle.label, particle.group)
+                    if self.grouping_preview
+                    else particle.group
+                ),
             ]
             for column, value in enumerate(values):
                 self.particle_table.setItem(row, column, QTableWidgetItem(value))
 
-    def _refresh_groups(self) -> None:
+    def _refresh_grouping_panel(self) -> None:
         if not self.manifest:
+            self.grouping_panel.set_context(
+                None, [], calibrated=False, groupings=[], active_id=None
+            )
             return
-        self.groups_table.setRowCount(0)
-        for group in self.manifest.groups:
-            row = self.groups_table.rowCount()
-            self.groups_table.insertRow(row)
-            values = [group.name, group.radius_min, group.radius_max, group.circularity_min, group.circularity_max]
-            for column, value in enumerate(values):
-                self.groups_table.setItem(row, column, QTableWidgetItem("" if value is None else str(value)))
+        layer = next(
+            (
+                item
+                for item in self.manifest.layers
+                if item.id == self.current_layer_id and item.kind == "instances"
+            ),
+            None,
+        )
+        layer_id = layer.id if layer else None
+        groupings = (
+            [
+                grouping
+                for grouping in self.manifest.particle_groupings
+                if grouping.source_layer_id == layer_id
+            ]
+            if layer_id
+            else []
+        )
+        active_id = (
+            self.manifest.active_particle_groupings.get(layer_id) if layer_id else None
+        )
+        self.grouping_panel.set_context(
+            layer_id,
+            self.particles if layer_id else [],
+            calibrated=bool(self.manifest.calibration),
+            groupings=groupings,
+            active_id=active_id,
+        )
+        active = self._active_particle_grouping(layer_id)
+        if active and self.particles:
+            self._preview_particle_grouping(active)
+        elif not layer_id:
+            self.grouping_preview = None
+            self.grouping_preview_definition = None
+            self.grouping_panel.set_statistics({})
 
     def _show_summary(self, values: dict) -> None:
         lines = []

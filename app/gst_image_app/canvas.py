@@ -295,17 +295,30 @@ class ImageCanvas(QGraphicsView):
                 (width, height),
                 interpolation=cv2.INTER_NEAREST,
             )
-            selections = (
-                ((small > 0), colors),
-            ) if isinstance(colors, tuple) else (
-                (small == label, color) for label, color in colors.items()
-            )
             layer_alpha = float(np.clip(opacity, 0, 1))
-            for selected, color in selections:
+            if isinstance(colors, tuple):
+                selections = [((small > 0), colors)]
+            else:
+                maximum = max(0, int(small.max()))
+                lookup = np.zeros((maximum + 1, 3), dtype=np.uint8)
+                present = np.zeros(maximum + 1, dtype=bool)
+                for label, color in colors.items():
+                    if 0 <= label <= maximum:
+                        lookup[label] = color
+                        present[label] = True
+                safe = np.clip(small, 0, maximum)
+                selected = (small >= 0) & (small <= maximum) & present[safe]
+                selections = [(selected, lookup[safe])]
+            for selected, selected_colors in selections:
                 if not np.any(selected):
                     continue
+                rgb = (
+                    np.asarray(selected_colors, dtype=np.float32)
+                    if isinstance(selected_colors, tuple)
+                    else selected_colors[selected].astype(np.float32)
+                )
                 premultiplied[selected] = (
-                    np.asarray(color, dtype=np.float32) * layer_alpha
+                    rgb * layer_alpha
                     + premultiplied[selected] * (1 - layer_alpha)
                 )
                 alpha[selected] = layer_alpha + alpha[selected] * (1 - layer_alpha)
