@@ -124,22 +124,103 @@ def test_all_exposed_parameters_are_copied_to_recipe(qtbot):
     assert recipe.fill_holes
 
 
-def test_restore_analysis_defaults_resets_recipe_and_resolution_controls(qtbot):
+def test_section_defaults_reset_only_their_parameters(qtbot):
     window = MainWindow()
     qtbot.addWidget(window)
+    window.channel.setCurrentIndex(window.channel.findData("red"))
+    window.segmentation_method.setCurrentIndex(
+        window.segmentation_method.findData(SegmentationMethod.MORPHOLOGICAL_WATERSHED)
+    )
     window.method.setCurrentIndex(window.method.findData(ThresholdMethod.MANUAL))
+    window.polarity.setCurrentIndex(1)
     window.manual_threshold_high.setValue(231)
     window.manual_threshold_low.setValue(50)
+    window.window_size.setValue(333)
+    window.morphological_input.setCurrentIndex(
+        window.morphological_input.findData(MorphologicalInput.BORDER)
+    )
+    window.morphological_gradient_radius.setValue(8)
+    window.morphological_tolerance.setValue(44)
+    window.morphological_connectivity.setCurrentIndex(
+        window.morphological_connectivity.findData(4)
+    )
+    window.morphological_calculate_dams.setChecked(False)
+    window.gaussian_blur_sigma.setValue(4.2)
+    window.illumination.setChecked(False)
+    window.ball_radius.setValue(999)
     window.open_radius.setValue(9)
+    window.close_radius.setValue(10)
     window.fill_holes.setChecked(True)
+    window.min_area.setValue(800)
+    window.max_area.setValue(900)
+    window.split_touching.setChecked(False)
+    window.watershed_distance.setValue(42)
+    window.tile_size.setValue(4096)
+    window.brush_radius.setValue(33)
     window.overview_resolution.setValue(80)
     window.roi_resolution.setValue(40)
-
-    window.restore_analysis_defaults()
-    recipe = window._recipe_from_controls()
-    ignored = {"id", "name", "target_class_id"}
-    assert recipe.model_dump(exclude=ignored) == SegmentationRecipe().model_dump(
-        exclude=ignored
+    window.preview_resolution.setCurrentIndex(1)
+    window.selected_roi_only.setChecked(True)
+    header_state = (
+        window.binary_class.currentData(),
+        window.channel.currentData(),
+        window.segmentation_method.currentData(),
+        window.method.currentData(),
+        window.polarity.currentData(),
+        window.overview_resolution.value(),
+        window.roi_resolution.value(),
+        window.preview_resolution.currentData(),
+        window.selected_roi_only.isChecked(),
     )
-    assert window.overview_resolution.value() == 25
-    assert window.roi_resolution.value() == 100
+
+    window.restore_threshold_defaults()
+    assert window.manual_threshold_low.value() == 0
+    assert window.manual_threshold_high.value() == 127
+    assert window.window_size.value() == 333
+    assert window.open_radius.value() == 9
+    window.restore_morphological_defaults()
+    window.restore_preblur_defaults()
+    window.restore_rolling_ball_defaults()
+    window.restore_open_close_defaults()
+    window.restore_flood_fill_defaults()
+    window.restore_particle_filter_defaults()
+    window.restore_watershed_defaults()
+    window.restore_tile_defaults()
+    window.restore_brush_defaults()
+
+    defaults = SegmentationRecipe()
+    assert window.morphological_input.currentData() == defaults.morphological_input
+    assert (
+        window.morphological_gradient_radius.value()
+        == defaults.morphological_gradient_radius_px
+    )
+    assert window.morphological_tolerance.value() == defaults.morphological_tolerance
+    assert (
+        window.morphological_connectivity.currentData()
+        == defaults.morphological_connectivity
+    )
+    assert window.morphological_calculate_dams.isChecked()
+    assert window.gaussian_blur_sigma.value() == defaults.gaussian_blur_sigma
+    assert window.illumination.isChecked()
+    assert window.ball_radius.value() == defaults.rolling_ball_radius_px
+    assert window.open_radius.value() == defaults.open_radius_px
+    assert window.close_radius.value() == defaults.close_radius_px
+    assert window.fill_holes.isChecked() == defaults.fill_holes
+    assert window.min_area.value() == defaults.min_particle_area_px
+    assert window.max_area.value() == 0
+    assert window.split_touching.isChecked() == defaults.split_touching
+    assert window.watershed_distance.value() == defaults.watershed_min_distance_px
+    assert window.tile_size.value() == defaults.tile_size_px
+    assert window.brush_radius.value() == 12
+    assert not hasattr(window, "restore_defaults_button")
+    assert header_state == (
+        window.binary_class.currentData(),
+        window.channel.currentData(),
+        window.segmentation_method.currentData(),
+        window.method.currentData(),
+        window.polarity.currentData(),
+        window.overview_resolution.value(),
+        window.roi_resolution.value(),
+        window.preview_resolution.currentData(),
+        window.selected_roi_only.isChecked(),
+    )

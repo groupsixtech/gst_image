@@ -6,7 +6,7 @@
 - [x] Added Delete selected actions for layers, ROIs, measurements/calibration, and groups; deleting items also clears their image overlays/annotations and dependent ROI results.
 - [x] Fixed the eyedropper click interaction; it now samples the native source and updates the selected threshold/color target.
 - [x] Verified all four threshold methods and added method-specific GUI parameters/visibility for Sauvola, adaptive Gaussian, Otsu, and manual thresholding.
-- [x] Added a Restore analysis defaults button that resets the complete recipe, preview settings, resolutions, and brush size.
+- [x] Added independent per-section restore buttons without changing header selections, preview/ROI scope, or resolution settings.
 - [x] Added independent 0-100% overview and selected-ROI resolution controls; 100% loads native resolution while final analysis remains full resolution regardless of preview settings.
 - [x] Added threshold post-processing controls for morphological closing and border-seeded flood filling of enclosed holes. https://medium.com/python-other/hole-filling-of-opencv-binary-image-use-floodfill-eb9464023b20
 - [x] Added an ImageJ/MorphoLibJ-inspired morphological watershed segmentation method with object/border inputs, morphological/internal/external gradients, extended-minima tolerance, 4/8 connectivity, and optional dams. https://imagej.net/plugins/morphological-segmentation
@@ -16,3 +16,5 @@
 - [x] Made mask-brush and mask-eraser operation visible with a high-contrast source-pixel cursor outline, immediate paint overlays, and actionable guidance when no editable result layer is selected.
 - [x] Added a Seed eraser tool; erase strokes are saved and replayed with the other class-training strokes.
 - [x] Replaced the raw 4.5 MP worker traceback with a preflight warning that reports the current size, recommends a safe Overview resolution, and links the workflow from `docs/region-classification.md`.
+- [x] Replaced the global restore action with per-section defaults, including only the active threshold method, while preserving segmentation class, channel, segmentation method, threshold method, polarity, preview/ROI scope, and overview/ROI resolutions.
+- [x] Made final selected-ROI runs load and process only the selected native-resolution crop, then place labels, domains, and particle coordinates back into the full-source project coordinate system.

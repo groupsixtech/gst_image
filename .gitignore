@@ -13,3 +13,4 @@ dist/
 *.gstproj
 test-output/
 pytest-cache*/
+*.code-workspace

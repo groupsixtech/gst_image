@@ -42,7 +42,10 @@ not on `PATH`.
 4. Preview and run the particle recipe. Overview and selected-ROI resolutions are controlled
    independently from 0-100%; 100% uses native pixels. Use **Fast overview** for whole-image
    tuning, or select one Include/Analysis box and choose **Selected ROI** to limit memory. The
-   **Run particles — full resolution** action always analyzes the original source image.
+   **Run particles — full resolution** action always uses original-resolution pixels. With
+   **Analyze selected ROI/box only** enabled, it loads and processes only the selected native
+   ROI crop; otherwise it processes the complete source image. ROI results are positioned back
+   into full-source coordinates for overlays and export.
    Use the eyedropper to set either endpoint of a manual threshold range or a
    segmentation-class color directly from a native-resolution 5 × 5 source sample.
 5. Inspect the overlay and particle table; select the saved result layer before using its
@@ -83,8 +86,11 @@ an ordered 0-255 interval cannot express an empty selection.
 Binary closing and optional border-seeded flood filling are available after every threshold
 method. Closing joins nearby foreground and seals narrow gaps; flood filling fills enclosed
 background holes after all tiles have been assembled, so tile boundaries do not create false
-holes. **Restore analysis defaults** resets the full recipe, brush setting, preview mode, and
-both resolution controls (25% overview and 100% selected ROI).
+holes. Each parameter section has its own restore button for threshold-method settings,
+morphological watershed, pre-blur, rolling-ball correction, opening/closing, flood filling,
+particle filters, touching-particle watershed, tile size, and brush size. These actions leave
+the class, channel, segmentation/threshold methods, polarity, preview mode, ROI scope, and
+overview/ROI resolutions unchanged.
 
 The **Morphological watershed** segmentation option is based on the ImageJ/MorphoLibJ
 [Morphological Segmentation](https://imagej.net/plugins/morphological-segmentation) pipeline.

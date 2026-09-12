@@ -3,7 +3,12 @@ from types import SimpleNamespace
 import cv2
 import numpy as np
 from gst_image_app import mainwindow as mainwindow_module
-from gst_image_app.mainwindow import MainWindow, _analyze_region_preview, _analyze_source
+from gst_image_app.mainwindow import (
+    MainWindow,
+    _analyze_region_preview,
+    _analyze_source,
+    _analyze_source_region,
+)
 from PySide6.QtCore import QPointF, Qt
 
 from gst_image.analysis.calibration import create_measurement
@@ -270,6 +275,19 @@ def test_final_analysis_and_roi_preview_keep_native_resolution(monkeypatch, tmp_
     assert captured[-1] == ((37, 53), (37, 53), 101)
 
     roi = _rectangle()
+    payload = _analyze_source_region(
+        path,
+        (10, 8, 31, 25),
+        [roi],
+        [roi.id],
+        recipe,
+        None,
+        progress=lambda *_: None,
+        cancelled=lambda: False,
+    )
+    assert captured[-1] == ((17, 21), (17, 21), 101)
+    assert payload[3] == (10, 8, 31, 25)
+
     native_region = np.zeros((17, 21, 3), dtype=np.uint8)
     _analyze_region_preview(
         native_region,
@@ -282,3 +300,74 @@ def test_final_analysis_and_roi_preview_keep_native_resolution(monkeypatch, tmp_
         cancelled=lambda: False,
     )
     assert captured[-1] == ((17, 21), (17, 21), 101)
+
+
+def test_final_selected_roi_run_dispatches_only_native_roi(qtbot, tmp_path):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_new_image(_source(tmp_path))
+    roi = _rectangle()
+    window.manifest.rois.append(roi)
+    window._refresh_rois()
+    window.rois_list.item(0).setSelected(True)
+    window.selected_roi_only.setChecked(True)
+    started = []
+    window.thread_pool = SimpleNamespace(start=started.append)
+
+    window.run_segmentation()
+
+    assert len(started) == 1
+    worker = started[0]
+    assert worker.function is _analyze_source_region
+    assert worker.args[1] == (10, 8, 31, 25)
+    assert worker.args[3] == [roi.id]
+    assert "21 × 17 pixels" in window.preview_status.text()
+    window.worker = None
+    window._set_dirty(False)
+
+
+def test_selected_roi_result_is_placed_in_full_source_coordinates(qtbot, tmp_path):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    path = _source(tmp_path)
+    window._load_new_image(path)
+    roi = _rectangle()
+    window.manifest.rois.append(roi)
+    recipe = SegmentationRecipe(
+        target_class_id=window.binary_class.currentData(),
+        threshold_method=ThresholdMethod.MANUAL,
+        manual_threshold_low=0,
+        manual_threshold_high=255,
+        illumination_correction=False,
+        gaussian_blur_sigma=0,
+        open_radius_px=0,
+        close_radius_px=0,
+        min_particle_area_px=1,
+        split_touching=False,
+    )
+    payload = _analyze_source_region(
+        path,
+        (10, 8, 31, 25),
+        [roi],
+        [roi.id],
+        recipe,
+        None,
+        progress=lambda *_: None,
+        cancelled=lambda: False,
+    )
+    window.run_recipe = recipe
+    window.run_scope_ids = [roi.id]
+
+    window._particle_result(payload)
+
+    assert window.current_labels.shape == (40, 60)
+    assert not np.any(window.current_labels[:8])
+    assert not np.any(window.current_labels[:, :10])
+    assert np.any(window.current_labels[8:25, 10:31])
+    assert window.particles[0].centroid_x_px == 20
+    assert window.particles[0].centroid_y_px == 16
+    summary = window.manifest.runs[-1].summary
+    assert summary["analysis_scope"] == "selected_roi"
+    assert summary["processed_width_px"] == 21
+    assert summary["source_width_px"] == 60
+    window._set_dirty(False)

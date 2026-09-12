@@ -117,7 +117,57 @@ def _analyze_source(path, rois, include_ids, recipe, calibration, *, progress, c
         progress=progress,
         cancelled=cancelled,
     )
-    return gray, domain, result
+    return gray, domain, result, (0, 0, gray.shape[1], gray.shape[0])
+
+
+def _analyze_source_region(
+    path,
+    bounds,
+    rois,
+    include_ids,
+    recipe,
+    calibration,
+    *,
+    progress,
+    cancelled,
+):
+    """Load and analyze only one native-resolution source region."""
+    source, actual_bounds = load_region(
+        path,
+        bounds,
+        color=recipe.channel != "gray",
+        scale_percent=100,
+    )
+    left, top, _, _ = actual_bounds
+    local_rois = [
+        roi.model_copy(
+            update={
+                "points": [
+                    Point(x=point.x - left, y=point.y - top)
+                    for point in roi.points
+                ]
+            }
+        )
+        for roi in rois
+    ]
+    gray = to_gray(source, recipe.channel)
+    progress(0.01, "Building selected-ROI specimen mask")
+    specimen = suggest_specimen_mask(gray)
+    domain = build_analysis_mask(
+        gray.shape,
+        local_rois,
+        specimen,
+        set(include_ids),
+    )
+    result = segment_particles(
+        source,
+        domain,
+        recipe,
+        calibration,
+        progress=progress,
+        cancelled=cancelled,
+    )
+    return gray, domain, result, actual_bounds
 
 
 def _analyze_preview(
@@ -611,6 +661,44 @@ class MainWindow(QMainWindow):
         self.brush_radius = QSpinBox()
         self.brush_radius.setRange(1, 500)
         self.brush_radius.setValue(12)
+        self.threshold_defaults_button = QPushButton("Restore threshold defaults")
+        self.threshold_defaults_button.clicked.connect(self.restore_threshold_defaults)
+        self.morphological_defaults_button = QPushButton(
+            "Restore morphological defaults"
+        )
+        self.morphological_defaults_button.clicked.connect(
+            self.restore_morphological_defaults
+        )
+        self.preblur_defaults_button = QPushButton("Restore pre-blur default")
+        self.preblur_defaults_button.clicked.connect(self.restore_preblur_defaults)
+        self.rolling_ball_defaults_button = QPushButton(
+            "Restore rolling-ball defaults"
+        )
+        self.rolling_ball_defaults_button.clicked.connect(
+            self.restore_rolling_ball_defaults
+        )
+        self.open_close_defaults_button = QPushButton("Restore open/close defaults")
+        self.open_close_defaults_button.clicked.connect(
+            self.restore_open_close_defaults
+        )
+        self.flood_fill_defaults_button = QPushButton("Restore flood-fill default")
+        self.flood_fill_defaults_button.clicked.connect(
+            self.restore_flood_fill_defaults
+        )
+        self.particle_filter_defaults_button = QPushButton(
+            "Restore particle-filter defaults"
+        )
+        self.particle_filter_defaults_button.clicked.connect(
+            self.restore_particle_filter_defaults
+        )
+        self.watershed_defaults_button = QPushButton("Restore watershed defaults")
+        self.watershed_defaults_button.clicked.connect(
+            self.restore_watershed_defaults
+        )
+        self.tile_defaults_button = QPushButton("Restore tile-size default")
+        self.tile_defaults_button.clicked.connect(self.restore_tile_defaults)
+        self.brush_defaults_button = QPushButton("Restore brush default")
+        self.brush_defaults_button.clicked.connect(self.restore_brush_defaults)
         form.addRow("Segmentation class", self.binary_class)
         form.addRow("Analysis channel", self.channel)
         form.addRow("Segmentation method", self.segmentation_method)
@@ -665,29 +753,36 @@ class MainWindow(QMainWindow):
         form.addRow("Adaptive constant C", self.gaussian_c_control)
         form.addRow("Manual lower threshold", self.manual_threshold_low_control)
         form.addRow("Manual upper threshold", self.manual_threshold_high_control)
+        form.addRow(self.threshold_defaults_button)
         form.addRow("Morphological input", self.morphological_input)
         form.addRow("Gradient type", self.morphological_gradient)
         form.addRow("Morphological gradient radius (px)", self.morphological_gradient_control)
         form.addRow("Morphological tolerance", self.morphological_tolerance_control)
         form.addRow("Morphological connectivity", self.morphological_connectivity)
         form.addRow(self.morphological_calculate_dams)
+        form.addRow(self.morphological_defaults_button)
         form.addRow("Gaussian pre-blur sigma (px)", self.gaussian_blur_control)
+        form.addRow(self.preblur_defaults_button)
         form.addRow(self.illumination)
         form.addRow("Background radius (px)", self.ball_radius_control)
+        form.addRow(self.rolling_ball_defaults_button)
         form.addRow("Opening radius (px)", open_control)
         form.addRow("Closing radius (px)", close_control)
+        form.addRow(self.open_close_defaults_button)
         form.addRow(self.fill_holes)
+        form.addRow(self.flood_fill_defaults_button)
         form.addRow("Minimum area (px²)", min_area_control)
         form.addRow("Maximum area (px²)", max_area_control)
+        form.addRow(self.particle_filter_defaults_button)
         form.addRow(self.split_touching)
         form.addRow("Watershed minimum distance (px)", self.watershed_distance_control)
+        form.addRow(self.watershed_defaults_button)
         form.addRow("Tile size (px)", tile_control)
+        form.addRow(self.tile_defaults_button)
         form.addRow("Brush radius (px)", brush_control)
+        form.addRow(self.brush_defaults_button)
         layout.addLayout(form)
         layout.addWidget(self.selected_roi_only)
-        self.restore_defaults_button = QPushButton("Restore analysis defaults")
-        self.restore_defaults_button.clicked.connect(self.restore_analysis_defaults)
-        layout.addWidget(self.restore_defaults_button)
         display_row = QHBoxLayout()
         self.full_resolution_button = QPushButton("Show selected ROI")
         self.full_resolution_button.clicked.connect(self.show_full_resolution_roi)
@@ -960,7 +1055,15 @@ class MainWindow(QMainWindow):
 
     def _update_analysis_parameter_visibility(self, *_args) -> None:
         """Show only controls used by the active thresholding configuration."""
-        method = self.method.currentData()
+        method = ThresholdMethod(self.method.currentData())
+        method_label = method.value.replace("_", " ").title()
+        self.threshold_defaults_button.setText(f"Restore {method_label} defaults")
+        self.threshold_defaults_button.setEnabled(method != ThresholdMethod.OTSU)
+        self.threshold_defaults_button.setToolTip(
+            "Otsu calculates its threshold automatically and has no method-specific defaults."
+            if method == ThresholdMethod.OTSU
+            else "Restore only the parameters used by the selected threshold method."
+        )
         self._set_analysis_row_visible(
             self.sauvola_window_control, method == ThresholdMethod.SAUVOLA
         )
@@ -997,35 +1100,102 @@ class MainWindow(QMainWindow):
         self._set_analysis_row_visible(self.morphological_tolerance_control, morphological)
         self._set_analysis_row_visible(self.morphological_connectivity, morphological)
         self.morphological_calculate_dams.setVisible(morphological)
+        self.morphological_defaults_button.setVisible(morphological)
         self._set_analysis_row_visible(
             self.ball_radius_control, self.illumination.isChecked()
         )
         self.split_touching.setVisible(not morphological)
+        self.watershed_defaults_button.setVisible(not morphological)
         self._set_analysis_row_visible(
             self.watershed_distance_control,
             not morphological and self.split_touching.isChecked(),
         )
 
-    def restore_analysis_defaults(self) -> None:
-        """Restore every analysis and preview control to its application default."""
-        defaults = SegmentationRecipe()
-        self._set_recipe_controls(defaults)
-        if self.manifest is not None:
-            particle_class = next(
-                (item for item in self.manifest.classes if item.preset == "particle"), None
-            )
-            if particle_class is not None:
-                self.binary_class.setCurrentIndex(
-                    self.binary_class.findData(particle_class.id)
-                )
-        self.overview_resolution.setValue(25)
-        self.roi_resolution.setValue(100)
-        self.preview_resolution.setCurrentIndex(0)
-        self.eyedropper_target.setCurrentIndex(0)
-        self.selected_roi_only.setChecked(False)
-        self.brush_radius.setValue(12)
+    def _show_restored(self, section: str) -> None:
         self._invalidate_preview_confirmation()
-        self.statusBar().showMessage("Analysis parameters restored to defaults", 4000)
+        self.statusBar().showMessage(f"{section} restored to defaults", 3000)
+
+    def restore_threshold_defaults(self) -> None:
+        """Restore only parameters belonging to the selected threshold method."""
+        defaults = SegmentationRecipe()
+        method = ThresholdMethod(self.method.currentData())
+        if method == ThresholdMethod.SAUVOLA:
+            self.window_size.setValue(defaults.sauvola_window_px)
+            self.sauvola_k.setValue(defaults.sauvola_k)
+        elif method == ThresholdMethod.ADAPTIVE_GAUSSIAN:
+            self.gaussian_block.setValue(defaults.gaussian_block_px)
+            self.gaussian_c.setValue(defaults.gaussian_c)
+        elif method == ThresholdMethod.MANUAL:
+            self.manual_threshold_low.setValue(defaults.manual_threshold_low)
+            self.manual_threshold_high.setValue(defaults.manual_threshold_high)
+        else:
+            self.statusBar().showMessage(
+                "Otsu has no method-specific parameters to restore", 3000
+            )
+            return
+        self._show_restored(method.value.replace("_", " ").title())
+
+    def restore_morphological_defaults(self) -> None:
+        defaults = SegmentationRecipe()
+        self.morphological_input.setCurrentIndex(
+            self.morphological_input.findData(defaults.morphological_input)
+        )
+        self.morphological_gradient.setCurrentIndex(
+            self.morphological_gradient.findData(defaults.morphological_gradient)
+        )
+        self.morphological_gradient_radius.setValue(
+            defaults.morphological_gradient_radius_px
+        )
+        self.morphological_tolerance.setValue(defaults.morphological_tolerance)
+        self.morphological_connectivity.setCurrentIndex(
+            self.morphological_connectivity.findData(
+                defaults.morphological_connectivity
+            )
+        )
+        self.morphological_calculate_dams.setChecked(
+            defaults.morphological_calculate_dams
+        )
+        self._show_restored("Morphological parameters")
+
+    def restore_preblur_defaults(self) -> None:
+        self.gaussian_blur_sigma.setValue(SegmentationRecipe().gaussian_blur_sigma)
+        self._show_restored("Gaussian pre-blur")
+
+    def restore_rolling_ball_defaults(self) -> None:
+        defaults = SegmentationRecipe()
+        self.illumination.setChecked(defaults.illumination_correction)
+        self.ball_radius.setValue(defaults.rolling_ball_radius_px)
+        self._show_restored("Rolling-ball correction")
+
+    def restore_open_close_defaults(self) -> None:
+        defaults = SegmentationRecipe()
+        self.open_radius.setValue(defaults.open_radius_px)
+        self.close_radius.setValue(defaults.close_radius_px)
+        self._show_restored("Opening and closing")
+
+    def restore_flood_fill_defaults(self) -> None:
+        self.fill_holes.setChecked(SegmentationRecipe().fill_holes)
+        self._show_restored("Flood-fill")
+
+    def restore_particle_filter_defaults(self) -> None:
+        defaults = SegmentationRecipe()
+        self.min_area.setValue(defaults.min_particle_area_px)
+        self.max_area.setValue(defaults.max_particle_area_px or 0)
+        self._show_restored("Particle filters")
+
+    def restore_watershed_defaults(self) -> None:
+        defaults = SegmentationRecipe()
+        self.split_touching.setChecked(defaults.split_touching)
+        self.watershed_distance.setValue(defaults.watershed_min_distance_px)
+        self._show_restored("Touching-particle watershed")
+
+    def restore_tile_defaults(self) -> None:
+        self.tile_size.setValue(SegmentationRecipe().tile_size_px)
+        self._show_restored("Tile size")
+
+    def restore_brush_defaults(self) -> None:
+        self.brush_radius.setValue(12)
+        self._show_restored("Brush radius")
 
     def _selected_full_resolution_roi(self) -> ROI | None:
         if self.manifest is None:
@@ -1401,8 +1571,18 @@ class MainWindow(QMainWindow):
             )
             return
         control_recipe = self._recipe_from_controls()
-        selected = self.rois_list.selectedItems() if self.selected_roi_only.isChecked() else []
-        self.run_scope_ids = [item.data(Qt.ItemDataRole.UserRole) for item in selected]
+        selected_roi = None
+        if self.selected_roi_only.isChecked():
+            selected_roi = self._selected_full_resolution_roi()
+            if selected_roi is None:
+                QMessageBox.information(
+                    self,
+                    "Selected-ROI analysis",
+                    "Select exactly one Include or Analysis box before running "
+                    "a selected-ROI analysis.",
+                )
+                return
+        self.run_scope_ids = [selected_roi.id] if selected_roi is not None else []
         confirmed_matches = (
             self.confirmed_preview_recipe is not None
             and self.confirmed_preview_scope_ids == self.run_scope_ids
@@ -1431,13 +1611,27 @@ class MainWindow(QMainWindow):
         else:
             self.manifest.recipes.append(recipe)
         self.run_recipe = recipe
-        self.worker = FunctionWorker(
-            _analyze_source,
+        worker_function = _analyze_source
+        worker_arguments = (
             self.current_path,
             list(self.manifest.rois),
             self.run_scope_ids,
             recipe,
             self.manifest.calibration,
+        )
+        if selected_roi is not None:
+            worker_function = _analyze_source_region
+            worker_arguments = (
+                self.current_path,
+                self._roi_bounds(selected_roi),
+                list(self.manifest.rois),
+                self.run_scope_ids,
+                recipe,
+                self.manifest.calibration,
+            )
+        self.worker = FunctionWorker(
+            worker_function,
+            *worker_arguments,
             with_callbacks=True,
         )
         self.worker.signals.progress.connect(self._progress)
@@ -1447,10 +1641,17 @@ class MainWindow(QMainWindow):
         self.preview_button.setEnabled(False)
         self.run_button.setEnabled(False)
         self.cancel_button.setEnabled(True)
-        self.preview_status.setText(
-            f"Running original {self.manifest.image_width} × "
-            f"{self.manifest.image_height} pixel source"
-        )
+        if selected_roi is not None:
+            left, top, right, bottom = self._roi_bounds(selected_roi)
+            self.preview_status.setText(
+                f"Running selected ROI at original resolution: "
+                f"{right - left} × {bottom - top} pixels"
+            )
+        else:
+            self.preview_status.setText(
+                f"Running original {self.manifest.image_width} × "
+                f"{self.manifest.image_height} pixel source"
+            )
         self.thread_pool.start(self.worker)
 
     def run_preview_segmentation(self) -> None:
@@ -1582,11 +1783,55 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(message)
 
     def _particle_result(self, payload) -> None:
-        gray, domain, result = payload
+        gray, domain, result, bounds = payload
+        left, top, right, bottom = bounds
+        full_width = self.manifest.image_width
+        full_height = self.manifest.image_height
+        cropped_run = bounds != (0, 0, full_width, full_height)
+        if cropped_run:
+            expected_shape = (bottom - top, right - left)
+            if domain.shape != expected_shape or result.labels.shape != expected_shape:
+                raise ValueError(
+                    "Selected-ROI result dimensions do not match its source bounds"
+                )
+            full_domain = np.zeros((full_height, full_width), dtype=bool)
+            full_domain[top:bottom, left:right] = domain
+            full_labels = np.zeros((full_height, full_width), dtype=np.int32)
+            full_labels[top:bottom, left:right] = result.labels
+            result.labels = full_labels
+            result.mask = full_labels > 0
+            scale = (
+                self.manifest.calibration.mm_per_pixel
+                if self.manifest.calibration
+                else None
+            )
+            result.particles = [
+                particle.model_copy(
+                    update={
+                        "centroid_x_px": particle.centroid_x_px + left,
+                        "centroid_y_px": particle.centroid_y_px + top,
+                        "centroid_x_mm": (
+                            particle.centroid_x_mm + left * scale
+                            if particle.centroid_x_mm is not None and scale is not None
+                            else None
+                        ),
+                        "centroid_y_mm": (
+                            particle.centroid_y_mm + top * scale
+                            if particle.centroid_y_mm is not None and scale is not None
+                            else None
+                        ),
+                    }
+                )
+                for particle in result.particles
+            ]
+            domain = full_domain
         result.summary.update(
             {
-                "source_width_px": gray.shape[1],
-                "source_height_px": gray.shape[0],
+                "source_width_px": full_width,
+                "source_height_px": full_height,
+                "processed_width_px": gray.shape[1],
+                "processed_height_px": gray.shape[0],
+                "analysis_scope": "selected_roi" if cropped_run else "full_image",
                 "analysis_resolution": "original",
             }
         )
@@ -1654,8 +1899,10 @@ class MainWindow(QMainWindow):
         self._show_summary(result.summary)
         self._refresh_all()
         self._set_dirty(True)
+        scope = "Selected-ROI" if cropped_run else "Full-image"
         self.preview_status.setText(
-            f"Full-resolution analysis complete ({gray.shape[1]} × {gray.shape[0]} px)"
+            f"{scope} original-resolution analysis complete "
+            f"({gray.shape[1]} × {gray.shape[0]} processed px)"
         )
 
     def _worker_error(self, detail: str) -> None:
