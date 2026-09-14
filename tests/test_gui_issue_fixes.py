@@ -9,7 +9,8 @@ from gst_image_app.mainwindow import (
     _analyze_source,
     _analyze_source_region,
 )
-from PySide6.QtCore import QPointF, Qt
+from PySide6.QtCore import QPoint, QPointF, Qt
+from PySide6.QtGui import QKeySequence
 
 from gst_image.analysis.calibration import create_measurement
 from gst_image.models import (
@@ -144,6 +145,95 @@ def test_bracket_shortcuts_adjust_active_mask_brush_radius(qtbot, tmp_path):
     assert window.brush_radius.value() == 13
     qtbot.keyClick(window.canvas, Qt.Key.Key_BracketLeft)
     assert window.brush_radius.value() == 12
+
+
+def test_middle_mouse_temporarily_pans_without_changing_active_tool(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.resize(900, 600)
+    window.show()
+    window.canvas.set_image(np.zeros((400, 600, 3), np.uint8), (600, 400))
+    window._activate_tool("select")
+    window.canvas.scale(3, 3)
+    window.canvas.centerOn(300, 200)
+    qtbot.wait(50)
+
+    start = QPoint(250, 180)
+    before = (
+        window.canvas.horizontalScrollBar().value(),
+        window.canvas.verticalScrollBar().value(),
+    )
+    qtbot.mousePress(
+        window.canvas.viewport(), Qt.MouseButton.MiddleButton, pos=start
+    )
+    assert window.canvas.viewport().cursor().shape() == Qt.CursorShape.ClosedHandCursor
+    qtbot.mouseMove(window.canvas.viewport(), pos=start + QPoint(40, 25))
+    qtbot.mouseRelease(
+        window.canvas.viewport(),
+        Qt.MouseButton.MiddleButton,
+        pos=start + QPoint(40, 25),
+    )
+
+    after = (
+        window.canvas.horizontalScrollBar().value(),
+        window.canvas.verticalScrollBar().value(),
+    )
+    assert after != before
+    assert window.canvas.current_tool == "select"
+    assert window.canvas.viewport().cursor().shape() == Qt.CursorShape.CrossCursor
+
+
+def test_shift_a_triggers_preview_action(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    triggered = []
+    window.preview_action.triggered.connect(lambda *_args: triggered.append(True))
+
+    assert window.preview_action.shortcut() == QKeySequence("Shift+A")
+    window.activateWindow()
+    window.canvas.setFocus()
+    qtbot.wait(50)
+    qtbot.keyClick(window.canvas, Qt.Key.Key_A, Qt.KeyboardModifier.ShiftModifier)
+
+    assert len(triggered) == 1
+
+
+def test_particle_run_uses_and_preserves_selected_assisted_class(qtbot, tmp_path):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_new_image(_source(tmp_path))
+    particle_class = next(
+        item for item in window.manifest.classes if item.preset == "particle"
+    )
+    weld_class = next(item for item in window.manifest.classes if item.preset == "weld")
+
+    window.seed_class.setCurrentIndex(window.seed_class.findData(weld_class.id))
+    assert window.binary_class.currentData() == weld_class.id
+    window.seed_class.setCurrentIndex(window.seed_class.findData(particle_class.id))
+    assert window.binary_class.currentData() == particle_class.id
+
+    started = []
+    window.thread_pool = SimpleNamespace(start=started.append)
+    window.run_segmentation()
+
+    assert len(started) == 1
+    recipe = started[0].args[3]
+    assert recipe.target_class_id == particle_class.id
+    window.worker = None
+    window.run_recipe = recipe
+    window.run_scope_ids = []
+    labels = np.zeros((40, 60), dtype=np.int32)
+    result = SimpleNamespace(mask=labels > 0, labels=labels, particles=[], summary={})
+    window._particle_result(
+        (labels.astype(np.uint8), np.ones_like(labels, bool), result, (0, 0, 60, 40))
+    )
+
+    layer = next(item for item in window.manifest.layers if item.kind == "instances")
+    assert layer.class_id == particle_class.id
+    assert window.seed_class.currentData() == particle_class.id
+    assert window.binary_class.currentData() == particle_class.id
+    window._set_dirty(False)
 
 
 def test_mask_brush_and_eraser_edit_selected_result_with_immediate_overlay(

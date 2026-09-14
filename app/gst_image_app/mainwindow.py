@@ -426,6 +426,7 @@ class MainWindow(QMainWindow):
         self.grouping_preview: ParticleGroupingResult | None = None
         self.grouping_preview_definition: ParticleGrouping | None = None
         self._pending_grouping_preview: ParticleGrouping | None = None
+        self._synchronizing_class_selection = False
         self.selected_labels: set[int] = set()
         self.run_scope_ids: list[str] = []
         self.run_recipe: SegmentationRecipe | None = None
@@ -491,6 +492,13 @@ class MainWindow(QMainWindow):
         )
         self.increase_brush_action.setEnabled(False)
         edit_menu.addAction(self.increase_brush_action)
+
+        analysis_menu = self.menuBar().addMenu("&Analysis")
+        self.preview_action = QAction("Preview", self)
+        self.preview_action.setShortcut(QKeySequence("Shift+A"))
+        self.preview_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+        self.preview_action.triggered.connect(self.run_preview_segmentation)
+        analysis_menu.addAction(self.preview_action)
 
         toolbar = QToolBar("Tools", self)
         toolbar.setMovable(False)
@@ -872,6 +880,10 @@ class MainWindow(QMainWindow):
         layout.addWidget(QLabel("Assisted region classes"))
         self.seed_class = QComboBox()
         layout.addWidget(self.seed_class)
+        self.binary_class.currentIndexChanged.connect(
+            self._segmentation_class_changed
+        )
+        self.seed_class.currentIndexChanged.connect(self._assisted_class_changed)
         class_buttons = QHBoxLayout()
         add_class = QPushButton("Add class")
         add_class.clicked.connect(self.add_class)
@@ -1004,6 +1016,27 @@ class MainWindow(QMainWindow):
         current = self.brush_radius.value()
         if current != previous:
             self.statusBar().showMessage(f"Brush radius: {current} px", 2000)
+
+    def _segmentation_class_changed(self, _index: int) -> None:
+        """Keep particle-result and assisted-region class selections aligned."""
+        self._synchronize_class_selection(self.binary_class, self.seed_class)
+
+    def _assisted_class_changed(self, _index: int) -> None:
+        """Use the selected assisted class for subsequent particle results."""
+        self._synchronize_class_selection(self.seed_class, self.binary_class)
+
+    def _synchronize_class_selection(self, source: QComboBox, target: QComboBox) -> None:
+        if self._synchronizing_class_selection:
+            return
+        class_id = source.currentData()
+        target_index = target.findData(class_id)
+        if class_id is None or target_index < 0 or target_index == target.currentIndex():
+            return
+        self._synchronizing_class_selection = True
+        try:
+            target.setCurrentIndex(target_index)
+        finally:
+            self._synchronizing_class_selection = False
 
     def _current_editable_layer(self) -> SegmentationLayer | None:
         if self.manifest is None or self.current_layer_id is None:
@@ -2833,29 +2866,34 @@ class MainWindow(QMainWindow):
 
     def _refresh_all(self) -> None:
         selected_binary_class = self.binary_class.currentData()
+        selected_seed_class = self.seed_class.currentData()
+        self.binary_class.blockSignals(True)
+        self.seed_class.blockSignals(True)
         self.binary_class.clear()
         self.seed_class.clear()
         if self.manifest:
-            binary_classes = [
-                item
-                for item in self.manifest.classes
-                if item.enabled and item.preset in {"particle", "phase", None}
-            ]
-            for item in binary_classes:
+            available_classes = self._trainable_classes()
+            for item in available_classes:
                 self.binary_class.addItem(item.name, item.id)
             selected_index = self.binary_class.findData(selected_binary_class)
             if selected_index < 0:
                 selected_index = next(
                     (
                         index
-                        for index, item in enumerate(binary_classes)
+                        for index, item in enumerate(available_classes)
                         if item.preset == "particle"
                     ),
                     0,
                 )
             self.binary_class.setCurrentIndex(selected_index)
-            for item in self._trainable_classes():
+            for item in available_classes:
                 self.seed_class.addItem(item.name, item.id)
+            seed_index = self.seed_class.findData(selected_seed_class)
+            if seed_index < 0:
+                seed_index = self.seed_class.findData(self.binary_class.currentData())
+            self.seed_class.setCurrentIndex(max(0, seed_index))
+        self.binary_class.blockSignals(False)
+        self.seed_class.blockSignals(False)
         self._refresh_layers()
         self._refresh_rois()
         self._refresh_measurements()

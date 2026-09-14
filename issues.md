@@ -19,3 +19,6 @@
 - [x] Replaced the global restore action with per-section defaults, including only the active threshold method, while preserving segmentation class, channel, segmentation method, threshold method, polarity, preview/ROI scope, and overview/ROI resolutions.
 - [x] Made final selected-ROI runs load and process only the selected native-resolution crop, then place labels, domains, and particle coordinates back into the full-source project coordinate system.
 - [x] Added layer-scoped, saved particle grouping schemes with non-destructive size/circularity filters, exact dual-handle range controls, automatic 1D/2D group splitting, live color previews, per-group statistics, project migration, and grouping exports.
+- [x] Holding the middle mouse button temporarily enters panning mode without changing the active tool.
+- [x] Added `Shift+A` as a hotkey for Preview.
+- [x] Linked and preserved the Segmentation class and Assisted region class selections so Run Particles assigns its saved layer to the selected class instead of resetting to Weld.

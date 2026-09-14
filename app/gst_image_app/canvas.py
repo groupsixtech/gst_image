@@ -73,6 +73,8 @@ class ImageCanvas(QGraphicsView):
         self._brush_points: list[QPointF] = []
         self._brush_radius = 12
         self._brush_cursor_item: QGraphicsEllipseItem | None = None
+        self._middle_panning = False
+        self._middle_pan_position = None
 
     @property
     def source_size(self) -> tuple[int, int]:
@@ -99,9 +101,7 @@ class ImageCanvas(QGraphicsView):
             if tool == "pan"
             else QGraphicsView.DragMode.NoDrag
         )
-        self.viewport().setCursor(
-            Qt.CursorShape.OpenHandCursor if tool == "pan" else Qt.CursorShape.CrossCursor
-        )
+        self._restore_tool_cursor()
         if self._brush_cursor_item is not None:
             self._brush_cursor_item.setVisible(tool in self.BRUSH_TOOLS)
 
@@ -363,6 +363,19 @@ class ImageCanvas(QGraphicsView):
         self.scale(factor, factor)
 
     def mouseMoveEvent(self, event) -> None:
+        if self._middle_panning and self._middle_pan_position is not None:
+            position = event.position().toPoint()
+            delta = position - self._middle_pan_position
+            self._middle_pan_position = position
+            self.horizontalScrollBar().setValue(
+                self.horizontalScrollBar().value() - delta.x()
+            )
+            self.verticalScrollBar().setValue(
+                self.verticalScrollBar().value() - delta.y()
+            )
+            self.coordinates_changed.emit(self.mapToScene(position))
+            event.accept()
+            return
         point = self.mapToScene(event.position().toPoint())
         self.coordinates_changed.emit(point)
         if self._brush_cursor_item is not None and self._tool in self.BRUSH_TOOLS:
@@ -395,6 +408,14 @@ class ImageCanvas(QGraphicsView):
         super().keyPressEvent(event)
 
     def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.MiddleButton:
+            self._middle_panning = True
+            self._middle_pan_position = event.position().toPoint()
+            self.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
+            if self._brush_cursor_item is not None:
+                self._brush_cursor_item.setVisible(False)
+            event.accept()
+            return
         point = self.mapToScene(event.position().toPoint())
         if self._brush_cursor_item is not None and self._tool in self.BRUSH_TOOLS:
             self._position_brush_cursor(point)
@@ -413,6 +434,16 @@ class ImageCanvas(QGraphicsView):
         super().mousePressEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.MiddleButton:
+            self._middle_panning = False
+            self._middle_pan_position = None
+            self._restore_tool_cursor()
+            if self._brush_cursor_item is not None and self._tool in self.BRUSH_TOOLS:
+                point = self.mapToScene(event.position().toPoint())
+                self._position_brush_cursor(point)
+                self._brush_cursor_item.setVisible(self._display_rect.contains(point))
+            event.accept()
+            return
         if event.button() == Qt.MouseButton.LeftButton:
             point = self.mapToScene(event.position().toPoint())
             if self._start is not None and self._tool in self.LINE_TOOLS:
@@ -441,6 +472,13 @@ class ImageCanvas(QGraphicsView):
         if self._temporary is not None and self._temporary.scene() is not None:
             self.scene().removeItem(self._temporary)
         self._temporary = None
+
+    def _restore_tool_cursor(self) -> None:
+        self.viewport().setCursor(
+            Qt.CursorShape.OpenHandCursor
+            if self._tool == "pan"
+            else Qt.CursorShape.CrossCursor
+        )
 
     def _position_brush_cursor(self, center: QPointF) -> None:
         if self._brush_cursor_item is None:

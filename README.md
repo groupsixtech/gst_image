@@ -45,13 +45,16 @@ not on `PATH`.
    **Run particles — full resolution** action always uses original-resolution pixels. With
    **Analyze selected ROI/box only** enabled, it loads and processes only the selected native
    ROI crop; otherwise it processes the complete source image. ROI results are positioned back
-   into full-source coordinates for overlays and export.
+   into full-source coordinates for overlays and export. Press `Shift+A` to run the same
+   **Preview** action from the keyboard. The **Segmentation class** and **Assisted region
+   classes** selections stay linked, and the saved particle layer is assigned to that class.
    Use the eyedropper to set either endpoint of a manual threshold range or a
    segmentation-class color directly from a native-resolution 5 × 5 source sample.
 5. Inspect the overlay and particle table; select the saved result layer before using its
    mask brush/eraser or split/merge corrections. While a class seed, seed eraser, mask brush,
    or mask eraser is active, use `[` and `]` to decrease or increase its source-pixel radius.
-   The pink canvas outline shows the active brush footprint.
+   The pink canvas outline shows the active brush footprint. Hold the middle mouse button and
+   drag to pan temporarily without changing the active tool.
 6. Open **Particle groups** with an instance layer selected to filter and partition measured
    particles by equivalent radius, equivalent diameter, area, circularity, or a combination.
    The dual-handle range bars update the image, particle table, plots, and per-group statistics
