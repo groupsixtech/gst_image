@@ -199,6 +199,24 @@ def test_shift_a_triggers_preview_action(qtbot):
     assert len(triggered) == 1
 
 
+def test_o_and_p_select_mask_brush_and_eraser(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.activateWindow()
+    window.canvas.setFocus()
+    qtbot.wait(50)
+
+    assert window.tool_actions["mask_brush"].shortcut() == QKeySequence("O")
+    assert window.tool_actions["mask_eraser"].shortcut() == QKeySequence("P")
+    qtbot.keyClick(window.canvas, Qt.Key.Key_O)
+    assert window.canvas.current_tool == "mask_brush"
+    assert window.tool_actions["mask_brush"].isChecked()
+    qtbot.keyClick(window.canvas, Qt.Key.Key_P)
+    assert window.canvas.current_tool == "mask_eraser"
+    assert window.tool_actions["mask_eraser"].isChecked()
+
+
 def test_particle_run_uses_and_preserves_selected_assisted_class(qtbot, tmp_path):
     window = MainWindow()
     qtbot.addWidget(window)

@@ -51,10 +51,11 @@ not on `PATH`.
    Use the eyedropper to set either endpoint of a manual threshold range or a
    segmentation-class color directly from a native-resolution 5 × 5 source sample.
 5. Inspect the overlay and particle table; select the saved result layer before using its
-   mask brush/eraser or split/merge corrections. While a class seed, seed eraser, mask brush,
-   or mask eraser is active, use `[` and `]` to decrease or increase its source-pixel radius.
-   The pink canvas outline shows the active brush footprint. Hold the middle mouse button and
-   drag to pan temporarily without changing the active tool.
+   mask brush/eraser or split/merge corrections. Press `O` for **Mask brush** or `P` for
+   **Mask eraser**. While a class seed, seed eraser, mask brush, or mask eraser is active, use
+   `[` and `]` to decrease or increase its source-pixel radius. The pink canvas outline shows
+   the active brush footprint. Hold the middle mouse button and drag to pan temporarily without
+   changing the active tool.
 6. Open **Particle groups** with an instance layer selected to filter and partition measured
    particles by equivalent radius, equivalent diameter, area, circularity, or a combination.
    The dual-handle range bars update the image, particle table, plots, and per-group statistics

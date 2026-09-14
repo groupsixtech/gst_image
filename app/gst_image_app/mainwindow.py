@@ -531,6 +531,11 @@ class MainWindow(QMainWindow):
             toolbar.addAction(action)
             group.addAction(action)
             self.tool_actions[name] = action
+        for name, shortcut in (("mask_brush", "O"), ("mask_eraser", "P")):
+            self.tool_actions[name].setShortcut(QKeySequence(shortcut))
+            self.tool_actions[name].setShortcutContext(
+                Qt.ShortcutContext.ApplicationShortcut
+            )
         self.tool_actions["pan"].setChecked(True)
         toolbar.addSeparator()
         merge = QAction("Merge selected", self)
