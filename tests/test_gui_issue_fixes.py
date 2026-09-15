@@ -8,14 +8,19 @@ from gst_image_app.mainwindow import (
     _analyze_region_preview,
     _analyze_source,
     _analyze_source_region,
+    _particle_volume_pie_data,
 )
 from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtGui import QKeySequence
+from PySide6.QtWidgets import QApplication
 
 from gst_image.analysis.calibration import create_measurement
+from gst_image.analysis.particles import measure_particles
 from gst_image.models import (
     ROI,
     Calibration,
+    ParticleGroup,
+    ParticleGrouping,
     Point,
     ROIKind,
     SegmentationLayer,
@@ -429,6 +434,8 @@ def test_final_selected_roi_run_dispatches_only_native_roi(qtbot, tmp_path):
     assert worker.function is _analyze_source_region
     assert worker.args[1] == (10, 8, 31, 25)
     assert worker.args[3] == [roi.id]
+    assert roi.recipe_id == worker.args[4].id
+    assert worker.args[4].name == f"{roi.name} recipe"
     assert "21 × 17 pixels" in window.preview_status.text()
     window.worker = None
     window._set_dirty(False)
@@ -478,4 +485,138 @@ def test_selected_roi_result_is_placed_in_full_source_coordinates(qtbot, tmp_pat
     assert summary["analysis_scope"] == "selected_roi"
     assert summary["processed_width_px"] == 21
     assert summary["source_width_px"] == 60
+    window._set_dirty(False)
+
+
+def test_volume_fraction_pie_uses_group_area_and_analysis_remainder():
+    buckets = [
+        ("Fine", "#112233", [SimpleNamespace(area_px=10), SimpleNamespace(area_px=15)]),
+        ("Coarse", "#445566", [SimpleNamespace(area_px=35)]),
+    ]
+
+    labels, areas, colors, title = _particle_volume_pie_data(buckets, 100)
+
+    assert labels == ["Fine", "Coarse", "Matrix / unshown"]
+    assert areas == [25, 35, 40]
+    assert colors == ["#112233", "#445566", "#30343b"]
+    assert title == "Estimated volume fraction\n(area basis)"
+
+
+def test_copy_current_roi_mask_places_native_binary_crop_on_clipboard(qtbot, tmp_path):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_new_image(_source(tmp_path))
+    roi = _rectangle("Copy ROI")
+    layer = SegmentationLayer(
+        name="Copy particles", kind="instances", scope_roi_ids=[roi.id]
+    )
+    labels = np.zeros((40, 60), dtype=np.int32)
+    labels[10:13, 12:16] = 1
+    window.manifest.rois.append(roi)
+    window.manifest.layers.append(layer)
+    window.layer_masks[layer.id] = labels
+    window.current_layer_id = layer.id
+    window.current_labels = labels
+    window.current_mask = (labels > 0).astype(np.uint8)
+    window._refresh_all()
+    window.rois_list.item(0).setSelected(True)
+
+    window.copy_current_roi_mask()
+
+    image = QApplication.clipboard().image()
+    assert (image.width(), image.height()) == (21, 17)
+    assert image.pixelColor(0, 0).red() == 0
+    assert image.pixelColor(2, 2).red() == 255
+    assert "Copy ROI" in window.statusBar().currentMessage()
+    window._set_dirty(False)
+
+
+def test_selecting_roi_switches_its_particle_layer_and_saved_scheme(qtbot, tmp_path):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_new_image(_source(tmp_path))
+    first_roi = _rectangle("ROI one")
+    second_roi = ROI(
+        name="ROI two",
+        kind=ROIKind.ANALYSIS_BOX,
+        shape="rectangle",
+        points=[Point(x=32, y=8), Point(x=50, y=24)],
+    )
+    class_id = window.binary_class.currentData()
+    first_layer = SegmentationLayer(
+        name="Particles — ROI one",
+        class_id=class_id,
+        kind="instances",
+        scope_roi_ids=[first_roi.id],
+    )
+    second_layer = SegmentationLayer(
+        name="Particles — ROI two",
+        class_id=class_id,
+        kind="instances",
+        scope_roi_ids=[second_roi.id],
+    )
+    first_labels = np.zeros((40, 60), dtype=np.int32)
+    second_labels = np.zeros((40, 60), dtype=np.int32)
+    cv2.circle(first_labels, (20, 16), 3, 1, cv2.FILLED)
+    cv2.circle(second_labels, (40, 16), 4, 1, cv2.FILLED)
+    first_scheme = ParticleGrouping(
+        name="ROI one scheme",
+        source_layer_id=first_layer.id,
+        groups=[
+            ParticleGroup(
+                name="One",
+                size_unit="px",
+                size_min=0,
+                size_max=100,
+                circularity_min=0,
+                circularity_max=1,
+            )
+        ],
+    )
+    second_scheme = ParticleGrouping(
+        name="ROI two scheme",
+        source_layer_id=second_layer.id,
+        groups=[
+            ParticleGroup(
+                name="Two",
+                size_unit="px",
+                size_min=0,
+                size_max=100,
+                circularity_min=0,
+                circularity_max=1,
+            )
+        ],
+    )
+    window.manifest.rois.extend([first_roi, second_roi])
+    window.manifest.layers.extend([first_layer, second_layer])
+    window.layer_masks[first_layer.id] = first_labels
+    window.layer_masks[second_layer.id] = second_labels
+    window.manifest.particle_records[first_layer.id] = measure_particles(first_labels)
+    window.manifest.particle_records[second_layer.id] = measure_particles(second_labels)
+    window.manifest.particle_groupings.extend([first_scheme, second_scheme])
+    window.manifest.active_particle_groupings = {
+        first_layer.id: first_scheme.id,
+        second_layer.id: second_scheme.id,
+    }
+    window._refresh_all()
+
+    second_item = window.rois_list.item(1)
+    second_item.setSelected(True)
+    window._roi_selected(second_item)
+    assert window.current_layer_id == second_layer.id
+    assert window.grouping_panel.scheme_combo.currentData() == second_scheme.id
+    assert window.grouping_preview_definition.id == second_scheme.id
+    window._refresh_all()
+    assert [
+        item.data(Qt.ItemDataRole.UserRole)
+        for item in window.rois_list.selectedItems()
+    ] == [second_roi.id]
+
+    window.rois_list.clearSelection()
+    first_item = window.rois_list.item(0)
+    first_item.setSelected(True)
+    window._roi_selected(first_item)
+    assert window.current_layer_id == first_layer.id
+    assert window.grouping_panel.scheme_combo.currentData() == first_scheme.id
+    assert window.grouping_preview_definition.id == first_scheme.id
     window._set_dirty(False)

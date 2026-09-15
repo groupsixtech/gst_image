@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 from gst_image_app.mainwindow import MainWindow
 from gst_image_app.range_slider import MetricRangeControl
+from PySide6.QtWidgets import QApplication
 
 from gst_image.analysis.particles import measure_particles
 from gst_image.models import (
@@ -91,6 +92,15 @@ def test_particle_grouping_panel_previews_filters_colors_and_saves(qtbot):
     assert window.grouping_preview is not None
     assert len(panel.current_grouping().groups) == 2
     assert len({group.color for group in panel.current_grouping().groups}) == 2
+    panel.copy_group_table()
+    copied_groups = QApplication.clipboard().text().splitlines()
+    assert copied_groups[0].startswith("On\tColor\tName")
+    assert len(copied_groups) == 3
+    assert all(line.startswith("Yes\t#") for line in copied_groups[1:])
+    panel.copy_statistics_table()
+    copied_statistics = QApplication.clipboard().text().splitlines()
+    assert copied_statistics[0].startswith("Group\tCount\tCount %")
+    assert len(copied_statistics) == 5
     overlay = window.canvas._overlay_item.pixmap().toImage()
     left_color = overlay.pixelColor(20, 30)
     right_color = overlay.pixelColor(55, 30)
@@ -112,6 +122,29 @@ def test_particle_grouping_panel_previews_filters_colors_and_saves(qtbot):
     assert manifest.particle_groupings[0].name == grouping.name
     assert np.array_equal(window.layer_masks[layer.id], labels)
     window._set_dirty(False)
+
+
+def test_color_plots_include_volume_fraction_pie(qtbot, monkeypatch):
+    from PySide6.QtWidgets import QDialog
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    labels = np.zeros((40, 60), np.int32)
+    cv2.circle(labels, (20, 20), 5, 1, cv2.FILLED)
+    window.manifest = ProjectManifest(
+        name="plot GUI",
+        source_path="source.png",
+        source_sha256="0" * 64,
+        image_width=60,
+        image_height=40,
+    )
+    window.particles = measure_particles(labels)
+    monkeypatch.setattr(QDialog, "exec", lambda _dialog: None)
+
+    figure = window.plot_particles()
+
+    assert len(figure.axes) == 3
+    assert figure.axes[2].get_title() == "Particle area share"
 
 
 def test_threshold_method_shows_only_applicable_controls(qtbot):

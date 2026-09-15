@@ -22,3 +22,7 @@
 - [x] Holding the middle mouse button temporarily enters panning mode without changing the active tool.
 - [x] Added `Shift+A` as a hotkey for Preview.
 - [x] Linked and preserved the Segmentation class and Assisted region class selections so Run Particles assigns its saved layer to the selected class instead of resetting to Weld.
+- [x] Added an area-based estimated volume-fraction pie chart in group colors to the color-plots window, including matrix/unshown area so percentages remain relative to the analysis domain.
+- [x] Added clipboard actions for both the particle-group definition table and statistics table, using tab-separated text suitable for Notepad, Excel, and similar applications.
+- [x] Added a Layers-panel action that copies the active mask as a native-resolution black-and-white ROI image to the clipboard.
+- [x] Preserved independent recipes, result layers, active grouping schemes, particles, masks, and selections per ROI Analysis box; selecting an ROI now switches to its matching saved analysis context.

@@ -55,13 +55,18 @@ not on `PATH`.
    **Mask eraser**. While a class seed, seed eraser, mask brush, or mask eraser is active, use
    `[` and `]` to decrease or increase its source-pixel radius. The pink canvas outline shows
    the active brush footprint. Hold the middle mouse button and drag to pan temporarily without
-   changing the active tool.
+   changing the active tool. In the Layers tab, **Copy ROI mask image** copies the active
+   result as a native-resolution black-and-white ROI crop suitable for pasting into another
+   application.
 6. Open **Particle groups** with an instance layer selected to filter and partition measured
    particles by equivalent radius, equivalent diameter, area, circularity, or a combination.
    The dual-handle range bars update the image, particle table, plots, and per-group statistics
    without rerunning segmentation. Generate equal-width size groups, circularity groups, or a
    two-dimensional size/circularity grid, then edit group names, colors, and exact bounds before
-   saving the scheme to the project.
+   saving the scheme to the project. **Copy group table** and **Copy statistics** place the
+   complete tables on the clipboard as tab-separated text for Notepad, Excel, and similar
+   applications. **Open color plots** includes size, circularity, and an area-based estimated
+   volume-fraction pie chart in the active ROI's group colors.
 7. For macro zones, follow the [assisted region-classification guide](docs/region-classification.md)
    to paint and erase example strokes for Weld, HAZ, Base, or custom classes and train the
    classifier.
@@ -116,6 +121,10 @@ count percentage, total area, analyzed-domain area/estimated volume fraction, bo
 count, and size/circularity distributions. Saved schemes are exported to
 `particle_grouping_definitions.csv`, `particle_group_assignments.csv`, and
 `particle_group_statistics.csv`; color grouping overlays are exported as PNG files.
+Selected-ROI recipes and particle layers are likewise tied to their Analysis box. Clicking an
+ROI restores its particle recipe and activates that ROI's most recent matching result layer,
+particle records, mask, and saved grouping scheme, allowing several ROIs to be analyzed and
+edited independently in one open project.
 
 The **Morphological watershed** segmentation option is based on the ImageJ/MorphoLibJ
 [Morphological Segmentation](https://imagej.net/plugins/morphological-segmentation) pipeline.

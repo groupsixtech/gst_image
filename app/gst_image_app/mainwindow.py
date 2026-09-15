@@ -12,12 +12,14 @@ from PySide6.QtGui import (
     QActionGroup,
     QCloseEvent,
     QColor,
+    QImage,
     QKeySequence,
     QUndoCommand,
     QUndoStack,
 )
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QCheckBox,
     QColorDialog,
     QComboBox,
@@ -283,6 +285,32 @@ def _analyze_region_preview(
         progress=progress,
         cancelled=cancelled,
     )
+
+
+def _particle_volume_pie_data(
+    buckets: list[tuple[str, str, list]], analyzed_pixels: int | None
+) -> tuple[list[str], list[float], list[str], str]:
+    """Build area-based volume-fraction slices using the analysis domain."""
+    labels: list[str] = []
+    areas: list[float] = []
+    colors: list[str] = []
+    for name, color, records in buckets:
+        area = float(sum(particle.area_px for particle in records))
+        if area > 0:
+            labels.append(name)
+            areas.append(area)
+            colors.append(color)
+    visible_area = sum(areas)
+    if analyzed_pixels:
+        remainder = max(0.0, float(analyzed_pixels) - visible_area)
+        if remainder > 0:
+            labels.append("Matrix / unshown")
+            areas.append(remainder)
+            colors.append("#30343b")
+        title = "Estimated volume fraction\n(area basis)"
+    else:
+        title = "Particle area share"
+    return labels, areas, colors, title
 
 
 class MaskLineCommand(QUndoCommand):
@@ -934,6 +962,9 @@ class MainWindow(QMainWindow):
         self.delete_layers_button = QPushButton("Delete selected")
         self.delete_layers_button.clicked.connect(self.delete_selected_layers)
         layer_layout.addWidget(self.delete_layers_button)
+        self.copy_roi_mask_button = QPushButton("Copy ROI mask image")
+        self.copy_roi_mask_button.clicked.connect(self.copy_current_roi_mask)
+        layer_layout.addWidget(self.copy_roi_mask_button)
         self.layer_opacity = QDoubleSpinBox()
         self.layer_opacity.setRange(0, 1)
         self.layer_opacity.setSingleStep(0.05)
@@ -1640,18 +1671,27 @@ class MainWindow(QMainWindow):
         )
         if len(self.run_scope_ids) == 1:
             roi = next((item for item in self.manifest.rois if item.id == self.run_scope_ids[0]), None)
-            if roi and roi.recipe_id:
-                recipe = recipe.model_copy(update={"id": roi.recipe_id, "name": f"{roi.name} recipe"})
-                existing = next(
-                    (index for index, item in enumerate(self.manifest.recipes) if item.id == roi.recipe_id),
-                    None,
-                )
-                if existing is None:
-                    self.manifest.recipes.append(recipe)
+            if roi is not None:
+                if roi.recipe_id:
+                    recipe = recipe.model_copy(
+                        update={"id": roi.recipe_id, "name": f"{roi.name} recipe"}
+                    )
+                    existing = next(
+                        (
+                            index
+                            for index, item in enumerate(self.manifest.recipes)
+                            if item.id == roi.recipe_id
+                        ),
+                        None,
+                    )
+                    if existing is None:
+                        self.manifest.recipes.append(recipe)
+                    else:
+                        self.manifest.recipes[existing] = recipe
                 else:
-                    self.manifest.recipes[existing] = recipe
-            else:
-                self.manifest.recipes.append(recipe)
+                    recipe = recipe.model_copy(update={"name": f"{roi.name} recipe"})
+                    roi.recipe_id = recipe.id
+                    self.manifest.recipes.append(recipe)
         else:
             self.manifest.recipes.append(recipe)
         self.run_recipe = recipe
@@ -1903,7 +1943,15 @@ class MainWindow(QMainWindow):
             None,
         )
         if layer is None:
-            suffix = "" if not self.run_scope_ids else f" — {len(self.manifest.layers) + 1}"
+            scope_roi = next(
+                (
+                    roi
+                    for roi in self.manifest.rois
+                    if self.run_scope_ids == [roi.id]
+                ),
+                None,
+            )
+            suffix = f" — {scope_roi.name}" if scope_roi is not None else ""
             layer = SegmentationLayer(
                 name=f"{target_class.name}{suffix}",
                 class_id=target_class.id,
@@ -2396,6 +2444,54 @@ class MainWindow(QMainWindow):
             self._render_visible_layers()
             self._set_dirty(True)
 
+    def copy_current_roi_mask(self) -> None:
+        """Copy the active layer's native-resolution ROI mask to the clipboard."""
+        if self.manifest is None or self.current_layer_id is None:
+            self.statusBar().showMessage("Select a result layer to copy its mask", 4000)
+            return
+        layer = next(
+            (
+                item
+                for item in self.manifest.layers
+                if item.id == self.current_layer_id
+            ),
+            None,
+        )
+        values = self.layer_masks.get(self.current_layer_id)
+        if layer is None or values is None:
+            self.statusBar().showMessage("The selected layer has no saved mask", 4000)
+            return
+        roi = self._selected_full_resolution_roi()
+        if roi is None and len(layer.scope_roi_ids) == 1:
+            roi = next(
+                (
+                    item
+                    for item in self.manifest.rois
+                    if item.id == layer.scope_roi_ids[0]
+                ),
+                None,
+            )
+        if roi is not None:
+            left, top, right, bottom = self._roi_bounds(roi)
+            values = values[top:bottom, left:right]
+            scope_name = roi.name
+        else:
+            scope_name = "full image"
+        mask = np.ascontiguousarray((values > 0).astype(np.uint8) * 255)
+        height, width = mask.shape[:2]
+        image = QImage(
+            mask.data,
+            width,
+            height,
+            mask.strides[0],
+            QImage.Format.Format_Grayscale8,
+        ).copy()
+        QApplication.clipboard().setImage(image)
+        self.statusBar().showMessage(
+            f"Copied {layer.name} mask for {scope_name} ({width} × {height} px)",
+            5000,
+        )
+
     def delete_selected_rois(self) -> None:
         if self.manifest is None:
             return
@@ -2662,7 +2758,7 @@ class MainWindow(QMainWindow):
         self._render_visible_layers()
         self._set_dirty(True)
 
-    def plot_particles(self) -> None:
+    def plot_particles(self) -> object | None:
         if not self.particles:
             return
         from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
@@ -2671,11 +2767,11 @@ class MainWindow(QMainWindow):
 
         dialog = QDialog(self)
         dialog.setWindowTitle("Particle size and circularity groups")
-        dialog.resize(900, 500)
+        dialog.resize(1250, 500)
         layout = QVBoxLayout(dialog)
-        figure = Figure(figsize=(9, 4))
+        figure = Figure(figsize=(13, 4))
         canvas = FigureCanvasQTAgg(figure)
-        axes = figure.subplots(1, 2)
+        axes = figure.subplots(1, 3)
         grouping = self.grouping_preview_definition
         result = self.grouping_preview
         if grouping and result:
@@ -2753,12 +2849,28 @@ class MainWindow(QMainWindow):
         axes[0].set_ylabel("Count")
         axes[1].set_xlabel(x_label)
         axes[1].set_ylabel("Circularity")
+        analyzed_pixels, _ = self._grouping_statistics_context()
+        pie_labels, pie_areas, pie_colors, pie_title = _particle_volume_pie_data(
+            buckets, analyzed_pixels
+        )
+        if pie_areas:
+            axes[2].pie(
+                pie_areas,
+                labels=pie_labels,
+                colors=pie_colors,
+                autopct=lambda percent: f"{percent:.2g}%",
+                startangle=90,
+            )
+        else:
+            axes[2].text(0.5, 0.5, "No particle area", ha="center", va="center")
+        axes[2].set_title(pie_title)
         if len(buckets) > 1:
             axes[0].legend(fontsize="small")
             axes[1].legend(fontsize="small")
         figure.tight_layout()
         layout.addWidget(canvas)
         dialog.exec()
+        return figure
 
     def show_selected_layer(self, item: QListWidgetItem) -> None:
         self.grouping_preview_timer.stop()
@@ -2775,17 +2887,37 @@ class MainWindow(QMainWindow):
             self.current_layer_id = None
             self.current_labels = None
             self.current_mask = None
+            self.analysis_mask = None
             self.particles = []
         elif layer.kind == "multiclass":
             self.current_layer_id = layer.id
             self.current_labels = values.astype(np.int32)
             self.current_mask = None
+            self.analysis_mask = None
             self.particles = []
         else:
             self.current_layer_id = layer.id
             self.current_labels = values.astype(np.int32)
             self.current_mask = (self.current_labels > 0).astype(np.uint8)
             self.particles = self.manifest.particle_records.get(layer.id, [])
+            domain_layer = next(
+                (
+                    candidate
+                    for candidate in self.manifest.layers
+                    if candidate.kind == "domain"
+                    and (
+                        candidate.source_run_id == layer.source_run_id
+                        or candidate.scope_roi_ids == layer.scope_roi_ids
+                    )
+                    and candidate.id in self.layer_masks
+                ),
+                None,
+            )
+            self.analysis_mask = (
+                self.layer_masks[domain_layer.id].astype(bool)
+                if domain_layer is not None
+                else None
+            )
         self.grouping_preview = None
         self.grouping_preview_definition = None
         active_grouping = self._active_particle_grouping()
@@ -2957,18 +3089,25 @@ class MainWindow(QMainWindow):
         self.layers_list.blockSignals(False)
 
     def _refresh_rois(self) -> None:
+        selected_ids = {
+            item.data(Qt.ItemDataRole.UserRole)
+            for item in self.rois_list.selectedItems()
+        }
+        self.rois_list.blockSignals(True)
         self.rois_list.clear()
         if self.manifest:
             for roi in self.manifest.rois:
                 item = QListWidgetItem(f"{roi.name} [{roi.kind.value}]")
                 item.setData(Qt.ItemDataRole.UserRole, roi.id)
                 self.rois_list.addItem(item)
+                item.setSelected(roi.id in selected_ids)
             self.canvas.set_roi_outlines(
                 [
                     self._roi_polygon(roi)
                     for roi in self.manifest.rois
                 ]
             )
+        self.rois_list.blockSignals(False)
 
     def _roi_polygon(self, roi: ROI) -> list[QPointF]:
         points = [QPointF(point.x, point.y) for point in roi.points]
@@ -2992,6 +3131,49 @@ class MainWindow(QMainWindow):
             recipe = next((value for value in self.manifest.recipes if value.id == roi.recipe_id), None)
             if recipe:
                 self._set_recipe_controls(recipe)
+        candidates = [
+            layer
+            for layer in self.manifest.layers
+            if layer.kind == "instances" and layer.scope_roi_ids == [roi.id]
+        ]
+        target_class_id = self.binary_class.currentData()
+        matching_class = [
+            layer for layer in candidates if layer.class_id == target_class_id
+        ]
+        if matching_class:
+            candidates = matching_class
+        if candidates:
+            run_order = {run.id: index for index, run in enumerate(self.manifest.runs)}
+            layer = max(
+                candidates,
+                key=lambda candidate: run_order.get(candidate.source_run_id, -1),
+            )
+            for row in range(self.layers_list.count()):
+                layer_item = self.layers_list.item(row)
+                if layer_item.data(Qt.ItemDataRole.UserRole) == layer.id:
+                    self.layers_list.setCurrentItem(layer_item)
+                    self.show_selected_layer(layer_item)
+                    self.statusBar().showMessage(
+                        f"Selected {roi.name}: {layer.name} and its saved grouping scheme",
+                        5000,
+                    )
+                    break
+        else:
+            self.current_layer_id = None
+            self.current_labels = None
+            self.current_mask = None
+            self.analysis_mask = None
+            self.particles = []
+            self.grouping_preview = None
+            self.grouping_preview_definition = None
+            self._refresh_layers()
+            self._refresh_particles()
+            self._refresh_grouping_panel()
+            self._render_visible_layers()
+            self.statusBar().showMessage(
+                f"Selected {roi.name}; run particles to create its ROI result",
+                5000,
+            )
 
     def _set_recipe_controls(self, recipe: SegmentationRecipe) -> None:
         target_index = self.binary_class.findData(recipe.target_class_id)

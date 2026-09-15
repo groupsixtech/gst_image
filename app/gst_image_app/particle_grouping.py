@@ -9,6 +9,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QCheckBox,
     QColorDialog,
     QComboBox,
@@ -157,9 +158,12 @@ class ParticleGroupingPanel(QWidget):
         remove.clicked.connect(self._remove_group)
         color = QPushButton("Set color")
         color.clicked.connect(self._set_color)
+        self.copy_groups_button = QPushButton("Copy group table")
+        self.copy_groups_button.clicked.connect(self.copy_group_table)
         group_buttons.addWidget(add)
         group_buttons.addWidget(remove)
         group_buttons.addWidget(color)
+        group_buttons.addWidget(self.copy_groups_button)
         layout.addLayout(group_buttons)
 
         selected_box = QGroupBox("Selected group range")
@@ -197,6 +201,9 @@ class ParticleGroupingPanel(QWidget):
         )
         self.statistics_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         layout.addWidget(self.statistics_table)
+        self.copy_statistics_button = QPushButton("Copy statistics")
+        self.copy_statistics_button.clicked.connect(self.copy_statistics_table)
+        layout.addWidget(self.copy_statistics_button)
 
     def set_context(
         self,
@@ -271,6 +278,40 @@ class ParticleGroupingPanel(QWidget):
         self.preview_status.setText(
             f"Quick preview: {included} of {total} particles included; "
             f"{unclassified} included particles unclassified. Save to keep this scheme."
+        )
+
+    def copy_group_table(self) -> None:
+        """Copy every group-definition row as spreadsheet-friendly TSV."""
+        self._copy_table(self.groups_table, "group")
+
+    def copy_statistics_table(self) -> None:
+        """Copy every displayed group-statistics row as TSV."""
+        self._copy_table(self.statistics_table, "statistics")
+
+    def _copy_table(self, table: QTableWidget, label: str) -> None:
+        headers = [
+            table.horizontalHeaderItem(column).text()
+            for column in range(table.columnCount())
+        ]
+        lines = ["\t".join(headers)]
+        for row in range(table.rowCount()):
+            values = []
+            for column in range(table.columnCount()):
+                item = table.item(row, column)
+                if item is None:
+                    values.append("")
+                elif item.data(Qt.ItemDataRole.CheckStateRole) is not None:
+                    values.append(
+                        "Yes"
+                        if item.checkState() == Qt.CheckState.Checked
+                        else "No"
+                    )
+                else:
+                    values.append(item.text())
+            lines.append("\t".join(values))
+        QApplication.clipboard().setText("\n".join(lines))
+        self.preview_status.setText(
+            f"Copied {table.rowCount()} {label} row(s) to the clipboard as tab-separated text."
         )
 
     @staticmethod
