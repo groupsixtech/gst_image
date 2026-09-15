@@ -34,6 +34,12 @@ pytest
 Thin launchers are also provided under `bin/` for environments where console scripts are
 not on `PATH`.
 
+## GUI training documentation
+
+New GUI users should begin with the [GST Image training guide](docs/README.md). It provides a
+linked onboarding path, full panel/tool reference, segmentation tuning guidance, assisted
+region-classification training, result review, grouping, export, and troubleshooting.
+
 ## Typical GUI workflow
 
 1. Open a micrograph or an existing `.gstproj` directory.
