@@ -12,7 +12,7 @@ from typing import Any, Literal
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-PROJECT_SCHEMA_VERSION = 3
+PROJECT_SCHEMA_VERSION = 4
 
 
 def _id() -> str:
@@ -230,6 +230,46 @@ class RegionClassifierRecipe(BaseModel):
         return self
 
 
+class ModelInferenceRecipe(BaseModel):
+    """Reproducible settings for a reviewed, packaged ONNX segmentation model."""
+
+    id: str = Field(default_factory=_id)
+    name: str = "Model inference"
+    model_id: str
+    model_version: str
+    model_sha256: str = Field(min_length=64, max_length=64)
+    semantic_confidence_threshold: float = Field(default=0.5, ge=0, le=1)
+    particle_confidence_threshold: float = Field(default=0.5, ge=0, le=1)
+    boundary_confidence_threshold: float = Field(default=0.5, ge=0, le=1)
+    watershed_min_distance_px: int = Field(default=7, ge=1)
+    min_particle_area_px: int = Field(default=1, ge=1)
+    max_particle_area_px: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def validate_particle_bounds(self) -> ModelInferenceRecipe:
+        if (
+            self.max_particle_area_px is not None
+            and self.max_particle_area_px < self.min_particle_area_px
+        ):
+            raise ValueError("Maximum particle area must be at least the minimum")
+        return self
+
+
+class ModelInferenceRun(BaseModel):
+    """Immutable provenance for an ML result that is awaiting or passed review."""
+
+    id: str = Field(default_factory=_id)
+    created_at: datetime = Field(default_factory=_now)
+    recipe: ModelInferenceRecipe
+    layer_ids: list[str] = Field(default_factory=list)
+    summary: dict[str, Any] = Field(default_factory=dict)
+    source_bounds_px: tuple[int, int, int, int] | None = None
+    runtime_version: str = "not-recorded"
+    review_status: Literal["pending", "confirmed"] = "pending"
+    reviewed_at: datetime | None = None
+    reviewer: str | None = None
+
+
 class SegmentationLayer(BaseModel):
     id: str = Field(default_factory=_id)
     name: str
@@ -241,6 +281,7 @@ class SegmentationLayer(BaseModel):
     visible: bool = True
     opacity: float = Field(default=0.45, ge=0, le=1)
     class_value_map: dict[int, str] = Field(default_factory=dict)
+    review_status: Literal["not_required", "pending", "confirmed"] = "not_required"
 
 
 class ParticleRecord(BaseModel):
@@ -491,6 +532,7 @@ class ProjectManifest(BaseModel):
     rois: list[ROI] = Field(default_factory=list)
     recipes: list[SegmentationRecipe] = Field(default_factory=list)
     region_recipes: list[RegionClassifierRecipe] = Field(default_factory=list)
+    model_inference_recipes: list[ModelInferenceRecipe] = Field(default_factory=list)
     layers: list[SegmentationLayer] = Field(default_factory=list)
     measurements: list[Measurement] = Field(default_factory=list)
     # Retained for loading/API compatibility. New GUI work is stored as layer-scoped schemes.
@@ -498,6 +540,7 @@ class ProjectManifest(BaseModel):
     particle_groupings: list[ParticleGrouping] = Field(default_factory=list)
     active_particle_groupings: dict[str, str] = Field(default_factory=dict)
     runs: list[AnalysisRun] = Field(default_factory=list)
+    model_inference_runs: list[ModelInferenceRun] = Field(default_factory=list)
     edits: list[EditEvent] = Field(default_factory=list)
     training_strokes: list[TrainingStroke] = Field(default_factory=list)
     particle_records: dict[str, list[ParticleRecord]] = Field(default_factory=dict)

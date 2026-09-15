@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pickle
+from datetime import UTC, datetime
 from pathlib import Path
 
 import cv2
@@ -49,6 +50,7 @@ from PySide6.QtWidgets import (
 )
 
 from gst_image.analysis import (
+    ModelPack,
     build_analysis_mask,
     classify_regions,
     compute_project_fractions,
@@ -56,6 +58,7 @@ from gst_image.analysis import (
     evaluate_particle_grouping,
     measure_particles,
     particle_group_statistics,
+    run_model_inference,
     segment_particles,
     suggest_specimen_mask,
 )
@@ -76,6 +79,7 @@ from gst_image.models import (
     Calibration,
     ClassDefinition,
     EditEvent,
+    ModelInferenceRun,
     MorphologicalGradient,
     MorphologicalInput,
     ParticleGrouping,
@@ -122,6 +126,25 @@ def _analyze_source(path, rois, include_ids, recipe, calibration, *, progress, c
         cancelled=cancelled,
     )
     return gray, domain, result, (0, 0, gray.shape[1], gray.shape[0])
+
+
+def _analyze_model_source(path, pack_path, recipe, calibration, *, progress, cancelled):
+    """Run a separately installed model pack in the same worker path as particles."""
+    source = load_image(path, color=True)
+    gray = cv2.cvtColor(source, cv2.COLOR_BGR2GRAY)
+    progress(0.01, "Building model analysis domain")
+    domain = build_analysis_mask(gray.shape, specimen_mask=suggest_specimen_mask(gray))
+    pack = ModelPack.open(pack_path)
+    result = run_model_inference(
+        source,
+        domain,
+        pack,
+        recipe,
+        calibration,
+        progress=progress,
+        cancelled=cancelled,
+    )
+    return gray, domain, result, pack, recipe
 
 
 def _analyze_source_region(
@@ -1029,6 +1052,12 @@ class MainWindow(QMainWindow):
         )
         self.train_regions_button.clicked.connect(self.train_regions)
         layout.addWidget(self.train_regions_button)
+        self.run_model_button = QPushButton("Run reviewed model pack…")
+        self.run_model_button.setToolTip(
+            "Runs a local ONNX model pack at native resolution. Results remain pending expert review."
+        )
+        self.run_model_button.clicked.connect(self.run_model_inference_dialog)
+        layout.addWidget(self.run_model_button)
         layout.addStretch(1)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -1060,6 +1089,9 @@ class MainWindow(QMainWindow):
         self.delete_layers_button = QPushButton("Delete selected")
         self.delete_layers_button.clicked.connect(self.delete_selected_layers)
         layer_layout.addWidget(self.delete_layers_button)
+        self.confirm_model_button = QPushButton("Confirm selected model result…")
+        self.confirm_model_button.clicked.connect(self.confirm_selected_model_result)
+        layer_layout.addWidget(self.confirm_model_button)
         self.copy_roi_mask_button = QPushButton("Copy ROI mask image")
         self.copy_roi_mask_button.clicked.connect(self.copy_current_roi_mask)
         layer_layout.addWidget(self.copy_roi_mask_button)
@@ -1174,6 +1206,43 @@ class MainWindow(QMainWindow):
             target.setCurrentIndex(target_index)
         finally:
             self._synchronizing_class_selection = False
+
+    def confirm_selected_model_result(self) -> None:
+        if self.manifest is None or self.current_layer_id is None:
+            return
+        layer = next(
+            (item for item in self.manifest.layers if item.id == self.current_layer_id), None
+        )
+        run = next(
+            (
+                item
+                for item in self.manifest.model_inference_runs
+                if layer is not None and item.id == layer.source_run_id
+            ),
+            None,
+        )
+        if run is None:
+            QMessageBox.information(
+                self, "Confirm model result", "Select a layer produced by a pending model run first."
+            )
+            return
+        if run.review_status == "confirmed":
+            QMessageBox.information(self, "Confirm model result", "This model result is already confirmed.")
+            return
+        reviewer, accepted = QInputDialog.getText(
+            self, "Confirm model result", "Reviewer name or identifier:"
+        )
+        if not accepted or not reviewer.strip():
+            return
+        run.review_status = "confirmed"
+        run.reviewed_at = datetime.now(UTC)
+        run.reviewer = reviewer.strip()
+        for item in self.manifest.layers:
+            if item.source_run_id == run.id:
+                item.review_status = "confirmed"
+        self._set_dirty(True)
+        self._refresh_all()
+        self.statusBar().showMessage(f"Confirmed model result reviewed by {run.reviewer}", 5000)
 
     def _current_editable_layer(self) -> SegmentationLayer | None:
         if self.manifest is None or self.current_layer_id is None:
@@ -1844,6 +1913,125 @@ class MainWindow(QMainWindow):
             )
         self.thread_pool.start(self.worker)
 
+    def run_model_inference_dialog(self) -> None:
+        """Choose a local model pack and run it off the UI thread at source resolution."""
+        if self.current_path is None or self.manifest is None or self.worker is not None:
+            return
+        if not self.current_path.exists() or sha256_file(self.current_path) != self.manifest.source_sha256:
+            QMessageBox.critical(
+                self,
+                "Source changed",
+                "Relink the unchanged source as a new revision before running model inference.",
+            )
+            return
+        selected = QFileDialog.getExistingDirectory(self, "Choose model-pack directory")
+        if not selected:
+            return
+        try:
+            pack = ModelPack.open(selected)
+            recipe = pack.default_recipe()
+        except (FileNotFoundError, ValueError) as error:
+            QMessageBox.critical(self, "Model pack unavailable", str(error))
+            return
+        self.manifest.model_inference_recipes.append(recipe)
+        self.worker = FunctionWorker(
+            _analyze_model_source,
+            self.current_path,
+            selected,
+            recipe,
+            self.manifest.calibration,
+            with_callbacks=True,
+        )
+        self.worker.signals.progress.connect(self._progress)
+        self.worker.signals.result.connect(self._model_inference_result)
+        self.worker.signals.error.connect(self._worker_error)
+        self.worker.signals.finished.connect(self._worker_finished)
+        self.preview_button.setEnabled(False)
+        self.run_button.setEnabled(False)
+        self.run_model_button.setEnabled(False)
+        self.cancel_button.setEnabled(True)
+        self.preview_status.setText(
+            f"Running model pack {pack.manifest.model_id} at original source resolution"
+        )
+        self.thread_pool.start(self.worker)
+
+    def _model_class(self, name: str, index: int) -> ClassDefinition:
+        assert self.manifest is not None
+        existing = next(
+            (item for item in self.manifest.classes if item.name.casefold() == name.casefold()),
+            None,
+        )
+        if existing is not None:
+            return existing
+        colors = ("#66bb6a", "#42a5f5", "#ab47bc", "#ef5350", "#ffb300")
+        item = ClassDefinition(name=name, color=colors[index % len(colors)])
+        self.manifest.classes.append(item)
+        return item
+
+    def _model_inference_result(self, payload) -> None:
+        gray, domain, result, pack, recipe = payload
+        assert self.manifest is not None
+        layers: list[SegmentationLayer] = []
+        if result.semantic_labels is not None:
+            class_map = {
+                value: self._model_class(name, value).id
+                for value, name in pack.manifest.semantic_classes.items()
+                if value != 0 and name.casefold() != "background"
+            }
+            semantic_layer = SegmentationLayer(
+                name=f"{pack.manifest.model_id} phases",
+                kind="multiclass",
+                class_value_map=class_map,
+                review_status="pending",
+            )
+            layers.append(semantic_layer)
+            self.layer_masks[semantic_layer.id] = result.semantic_labels
+        particle_layer = None
+        if result.particle_labels is not None:
+            particle_layer = SegmentationLayer(
+                name=f"{pack.manifest.model_id} particles",
+                class_id=self._model_class("Particle", 0).id,
+                kind="instances",
+                review_status="pending",
+            )
+            layers.append(particle_layer)
+            self.layer_masks[particle_layer.id] = result.particle_labels
+            self.manifest.particle_records[particle_layer.id] = result.particles
+        domain_layer = SegmentationLayer(
+            name="Model analysis domain",
+            kind="domain",
+            visible=False,
+            review_status="pending",
+        )
+        layers.append(domain_layer)
+        self.layer_masks[domain_layer.id] = domain.astype(np.uint8)
+        run = ModelInferenceRun(
+            recipe=recipe,
+            layer_ids=[item.id for item in layers],
+            summary=result.summary,
+            source_bounds_px=(0, 0, self.manifest.image_width, self.manifest.image_height),
+            runtime_version=str(result.summary["runtime_version"]),
+        )
+        for layer in layers:
+            layer.source_run_id = run.id
+        self.manifest.layers.extend(layers)
+        self.manifest.model_inference_runs.append(run)
+        self.gray = gray
+        self.analysis_mask = domain
+        active_layer = particle_layer or next(
+            (item for item in layers if item.kind == "multiclass"), None
+        )
+        if active_layer is not None:
+            self.current_layer_id = active_layer.id
+            self.current_labels = self.layer_masks[active_layer.id]
+            self.current_mask = (self.current_labels > 0).astype(np.uint8)
+            self.particles = result.particles if active_layer is particle_layer else []
+        self._render_visible_layers()
+        self._show_summary({"review_status": "pending expert review", **result.summary})
+        self._refresh_all()
+        self._set_dirty(True)
+        self.preview_status.setText("Model result saved as pending review; inspect overlays before confirmation")
+
     def run_preview_segmentation(self) -> None:
         if self.preview_bgr is None or self.manifest is None or self.worker is not None:
             return
@@ -2126,6 +2314,7 @@ class MainWindow(QMainWindow):
         self.worker = None
         self.preview_button.setEnabled(True)
         self.run_button.setEnabled(True)
+        self.run_model_button.setEnabled(True)
         self.full_resolution_button.setEnabled(True)
         self.overview_button.setEnabled(True)
         self.cancel_button.setEnabled(False)
@@ -2588,19 +2777,30 @@ class MainWindow(QMainWindow):
             for run in self.manifest.runs
             if requested_ids.intersection(run.layer_ids)
         }
+        model_run_ids = {
+            run.id
+            for run in self.manifest.model_inference_runs
+            if requested_ids.intersection(run.layer_ids)
+        }
         removed_ids = set(requested_ids)
         for run in self.manifest.runs:
             if run.id in run_ids:
                 removed_ids.update(run.layer_ids)
+        for run in self.manifest.model_inference_runs:
+            if run.id in model_run_ids:
+                removed_ids.update(run.layer_ids)
         removed_ids.update(
             layer.id
             for layer in self.manifest.layers
-            if layer.source_run_id in run_ids
+            if layer.source_run_id in run_ids | model_run_ids
         )
         self.manifest.layers = [
             layer for layer in self.manifest.layers if layer.id not in removed_ids
         ]
         self.manifest.runs = [run for run in self.manifest.runs if run.id not in run_ids]
+        self.manifest.model_inference_runs = [
+            run for run in self.manifest.model_inference_runs if run.id not in model_run_ids
+        ]
         for layer_id in removed_ids:
             self.layer_masks.pop(layer_id, None)
             self.manifest.particle_records.pop(layer_id, None)
@@ -2841,12 +3041,20 @@ class MainWindow(QMainWindow):
             ),
             None,
         )
-        if run is None:
-            return None, True
-        return (
-            run.summary.get("analyzed_pixels"),
-            run.recipe.exclude_border_particles_from_size_stats,
+        if run is not None:
+            return (
+                run.summary.get("analyzed_pixels"),
+                run.recipe.exclude_border_particles_from_size_stats,
+            )
+        model_run = next(
+            (
+                item
+                for item in self.manifest.model_inference_runs
+                if layer is not None and item.id == layer.source_run_id
+            ),
+            None,
         )
+        return (model_run.summary.get("analyzed_pixels"), True) if model_run else (None, True)
 
     def _save_particle_grouping(self, grouping: ParticleGrouping) -> None:
         if self.manifest is None or self.current_layer_id is None:

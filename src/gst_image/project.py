@@ -31,6 +31,7 @@ DEPENDENCIES = (
     "scikit-learn",
     "scipy",
     "tifffile",
+    "onnxruntime",
 )
 
 
@@ -78,6 +79,13 @@ def _migrate(payload: dict[str, Any]) -> dict[str, Any]:
         payload["particle_groupings"] = groupings
         payload["active_particle_groupings"] = active
         payload["groups"] = []
+    if version < 4:
+        # Model inference was introduced as optional metadata. Older projects have no
+        # model-derived results, so empty collections retain their exact meaning.
+        payload.setdefault("model_inference_recipes", [])
+        payload.setdefault("model_inference_runs", [])
+        for layer in payload.get("layers", []):
+            layer.setdefault("review_status", "not_required")
     # SegmentationRecipe's pre-validator translates legacy manual_threshold values wherever
     # recipes occur, including recipes embedded in run history.
     payload["schema_version"] = PROJECT_SCHEMA_VERSION
@@ -199,6 +207,19 @@ def validate_project(path: str | Path, *, verify_hash: bool = True) -> list[str]
             issues.append(
                 f"Active particle grouping {grouping.name!r} belongs to a different layer"
             )
+    model_runs = {run.id: run for run in manifest.model_inference_runs}
+    for run in model_runs.values():
+        for layer_id in run.layer_ids:
+            if layer_id not in layer_ids:
+                issues.append(
+                    f"Model inference run {run.id} references a missing layer: {layer_id}"
+                )
+                continue
+            layer = next(layer for layer in manifest.layers if layer.id == layer_id)
+            if layer.source_run_id != run.id:
+                issues.append(
+                    f"Model inference run {run.id} does not own layer {layer.name!r}"
+                )
     return issues
 
 
@@ -225,6 +246,8 @@ def relink_source(
     if invalidate_results:
         manifest.layers.clear()
         manifest.runs.clear()
+        manifest.model_inference_runs.clear()
+        manifest.model_inference_recipes.clear()
         manifest.particle_records.clear()
         manifest.particle_groupings.clear()
         manifest.active_particle_groupings.clear()

@@ -8,9 +8,17 @@ from .analysis import (
     compute_area_fractions,
     compute_project_fractions,
     measure_particles,
+    run_model_inference,
     segment_particles,
 )
-from .evaluation import dice_score, evaluate_particle_segmentation, particle_instance_f1
+from .evaluation import (
+    ModelAcceptanceGates,
+    dice_score,
+    evaluate_model_release,
+    evaluate_particle_segmentation,
+    macro_dice_score,
+    particle_instance_f1,
+)
 from .export import export_analysis
 from .models import (
     ROI,
@@ -18,6 +26,8 @@ from .models import (
     Calibration,
     ClassDefinition,
     Measurement,
+    ModelInferenceRecipe,
+    ModelInferenceRun,
     ParticleCriteria,
     ParticleGroup,
     ParticleGrouping,
@@ -36,6 +46,9 @@ __all__ = [
     "Calibration",
     "ClassDefinition",
     "Measurement",
+    "ModelAcceptanceGates",
+    "ModelInferenceRecipe",
+    "ModelInferenceRun",
     "ParticleCriteria",
     "ParticleGroup",
     "ParticleGrouping",
@@ -50,12 +63,15 @@ __all__ = [
     "compute_area_fractions",
     "compute_project_fractions",
     "dice_score",
+    "evaluate_model_release",
     "evaluate_particle_segmentation",
     "export_analysis",
     "load_project",
+    "macro_dice_score",
     "measure_particles",
     "particle_instance_f1",
     "relink_source",
+    "run_model_inference",
     "save_project",
     "segment_particles",
     "validate_project",

@@ -3,8 +3,19 @@
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 
 import numpy as np
+
+
+@dataclass(frozen=True, slots=True)
+class ModelAcceptanceGates:
+    """Default quantitative gates before an expert may approve a model pack."""
+
+    macro_dice: float = 0.90
+    instance_f1_at_iou: float = 0.85
+    area_fraction_error_percentage_points: float = 5.0
+    median_equivalent_radius_relative_error: float = 0.10
 
 
 def dice_score(predicted: np.ndarray, expected: np.ndarray) -> float:
@@ -19,6 +30,64 @@ def dice_score(predicted: np.ndarray, expected: np.ndarray) -> float:
         return 1.0
     intersection = int(np.count_nonzero(predicted_mask & expected_mask))
     return 2 * intersection / denominator
+
+
+def macro_dice_score(
+    predicted: np.ndarray, expected: np.ndarray, class_values: list[int] | None = None
+) -> float:
+    """Mean per-class Dice for a multiclass phase map.
+
+    Background is included only when explicitly requested, keeping phase-release
+    gates focused on reportable material classes.
+    """
+    predicted = np.asarray(predicted)
+    expected = np.asarray(expected)
+    if predicted.shape != expected.shape:
+        raise ValueError("Compared masks must have the same shape")
+    values = class_values or sorted(
+        (set(np.unique(predicted).tolist()) | set(np.unique(expected).tolist())) - {0}
+    )
+    if not values:
+        return 1.0
+    return float(np.mean([dice_score(predicted == value, expected == value) for value in values]))
+
+
+def evaluate_model_release(
+    semantic_predicted: np.ndarray,
+    semantic_expected: np.ndarray,
+    particle_predicted: np.ndarray,
+    particle_expected: np.ndarray,
+    analysis_mask: np.ndarray | None = None,
+    *,
+    phase_values: list[int] | None = None,
+    gates: ModelAcceptanceGates | None = None,
+) -> dict[str, float | int | bool]:
+    """Evaluate held-out phase and particle outputs against default release gates.
+
+    Passing this function only makes a candidate ready for expert review; it does
+    not replace the required metallurgist approval recorded on an inference run.
+    """
+    gates = gates or ModelAcceptanceGates()
+    macro_dice = macro_dice_score(semantic_predicted, semantic_expected, phase_values)
+    particle = evaluate_particle_segmentation(
+        particle_predicted, particle_expected, analysis_mask
+    )
+    radius_error = particle["median_equivalent_radius_relative_error"]
+    metrics_pass = (
+        macro_dice >= gates.macro_dice
+        and particle["instance_f1_at_iou"] >= gates.instance_f1_at_iou
+        and particle["area_fraction_error_percentage_points"]
+        <= gates.area_fraction_error_percentage_points
+        and not math.isnan(radius_error)
+        and radius_error <= gates.median_equivalent_radius_relative_error
+    )
+    return {
+        "macro_dice": macro_dice,
+        **particle,
+        "metrics_pass": metrics_pass,
+        "expert_review_required": True,
+        "ready_for_expert_review": metrics_pass,
+    }
 
 
 def _instance_matches(

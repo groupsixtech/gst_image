@@ -4,6 +4,7 @@ import pytest
 
 from gst_image.evaluation import (
     dice_score,
+    evaluate_model_release,
     evaluate_particle_segmentation,
     particle_instance_f1,
 )
@@ -28,3 +29,13 @@ def test_particle_acceptance_metrics_for_small_boundary_difference():
 def test_evaluation_rejects_mismatched_shapes():
     with pytest.raises(ValueError, match="same shape"):
         dice_score(np.zeros((2, 2)), np.zeros((3, 3)))
+
+
+def test_model_release_metrics_require_expert_review_after_passing_gates():
+    semantic = np.array([[0, 1], [2, 2]], dtype=np.int32)
+    particles = np.array([[0, 1], [0, 1]], dtype=np.int32)
+    release = evaluate_model_release(semantic, semantic, particles, particles)
+
+    assert release["metrics_pass"]
+    assert release["expert_review_required"]
+    assert release["ready_for_expert_review"]

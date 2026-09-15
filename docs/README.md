@@ -15,10 +15,12 @@ order below once; thereafter, use the linked topic pages as a reference while an
    understand its parameters, and tune it systematically with worked examples.
 5. [Assisted region classification](region-classification.md) — paint examples, train the
    supervised classifier, improve its result, and understand its scikit-image/scikit-learn steps.
-6. [Review, correction, grouping, and export](review-correction-grouping-export.md) — inspect
+6. [Reviewed ONNX model packs](model-inference.md) — run validated offline phase and particle
+   models, preserve their provenance, and record expert review.
+7. [Review, correction, grouping, and export](review-correction-grouping-export.md) — inspect
    results, repair masks, separate/merge particles, group measurements, and deliver traceable
    files.
-7. [Glossary and troubleshooting](glossary-and-troubleshooting.md) — plain-language definitions,
+8. [Glossary and troubleshooting](glossary-and-troubleshooting.md) — plain-language definitions,
    common failure symptoms, and recovery actions.
 
 ## A sensible first exercise

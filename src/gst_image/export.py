@@ -180,7 +180,10 @@ def _export_particle_groupings(
     assignments: list[dict] = []
     statistics_rows: list[dict] = []
     layers = {layer.id: layer for layer in manifest.layers}
-    runs = {run.id: run for run in manifest.runs}
+    runs = {
+        **{run.id: run for run in manifest.runs},
+        **{run.id: run for run in manifest.model_inference_runs},
+    }
     for grouping in manifest.particle_groupings:
         layer_id = grouping.source_layer_id
         if layer_id is None or layer_id not in manifest.particle_records:
@@ -275,7 +278,9 @@ def _export_particle_groupings(
             result,
             analyzed_pixels=run.summary.get("analyzed_pixels") if run else None,
             exclude_border_from_size=(
-                run.recipe.exclude_border_particles_from_size_stats if run else True
+                getattr(run.recipe, "exclude_border_particles_from_size_stats", True)
+                if run
+                else True
             ),
         )
         for name, values in group_statistics.items():
@@ -389,6 +394,9 @@ def export_analysis(
                 "region_classification": [
                     item.model_dump(mode="json") for item in manifest.region_recipes
                 ],
+                "model_inference": [
+                    item.model_dump(mode="json") for item in manifest.model_inference_recipes
+                ],
             },
             indent=2,
         ),
@@ -472,7 +480,10 @@ def export_analysis(
             .agg(count=("label", "count"), area_px=("area_px", "sum"))
             .reset_index()
         )
-        runs = {run.id: run for run in manifest.runs}
+        runs = {
+            **{run.id: run for run in manifest.runs},
+            **{run.id: run for run in manifest.model_inference_runs},
+        }
         denominators = {
             layer.id: runs[layer.source_run_id].summary.get("analyzed_pixels")
             for layer in manifest.layers
@@ -512,13 +523,33 @@ def export_analysis(
         pd.DataFrame([entry.model_dump() for entry in fractions.entries]).to_csv(
             destination / "fractions.csv", index=False
         )
-    summaries = {run.id: run.summary for run in manifest.runs}
+    summaries = {
+        **{run.id: run.summary for run in manifest.runs},
+        **{run.id: run.summary for run in manifest.model_inference_runs},
+    }
     (destination / "analysis_summary.json").write_text(
         json.dumps(summaries, indent=2), encoding="utf-8"
     )
     summary_rows = [
-        {"analysis_run_id": run.id, "created_at": run.created_at, **run.summary}
+        {
+            "analysis_run_id": run.id,
+            "created_at": run.created_at,
+            "analysis_kind": "rule_based",
+            **run.summary,
+        }
         for run in manifest.runs
+    ] + [
+        {
+            "analysis_run_id": run.id,
+            "created_at": run.created_at,
+            "analysis_kind": "model_inference",
+            "model_id": run.recipe.model_id,
+            "model_version": run.recipe.model_version,
+            "model_sha256": run.recipe.model_sha256,
+            "review_status": run.review_status,
+            **run.summary,
+        }
+        for run in manifest.model_inference_runs
     ]
     pd.DataFrame(summary_rows).to_csv(destination / "analysis_summary.csv", index=False)
     if source_image is not None and masks:

@@ -199,7 +199,7 @@ def test_version_one_project_migrates_all_recipes_without_changing_masks(tmp_pat
     manifest_path.write_text(json.dumps(payload), encoding="utf-8")
 
     loaded, masks = load_project(project)
-    assert loaded.schema_version == 3
+    assert loaded.schema_version == 4
     assert (loaded.recipes[0].manual_threshold_low, loaded.recipes[0].manual_threshold_high) == (
         0,
         100,
@@ -212,7 +212,7 @@ def test_version_one_project_migrates_all_recipes_without_changing_masks(tmp_pat
 
     save_project(project, loaded, masks, source_override=source)
     saved = json.loads(manifest_path.read_text(encoding="utf-8"))
-    assert saved["schema_version"] == 3
+    assert saved["schema_version"] == 4
     assert "manual_threshold" not in saved["recipes"][0]
     assert "manual_threshold" not in saved["runs"][0]["recipe"]
 
@@ -260,7 +260,7 @@ def test_version_two_global_groups_migrate_to_layer_scoped_scheme(tmp_path):
 
     loaded, _ = load_project(project)
 
-    assert loaded.schema_version == 3
+    assert loaded.schema_version == 4
     assert loaded.groups == []
     assert len(loaded.particle_groupings) == 1
     grouping = loaded.particle_groupings[0]
