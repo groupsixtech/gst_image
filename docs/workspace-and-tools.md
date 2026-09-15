@@ -13,7 +13,7 @@ pixels, even when the displayed overview is scaled.
 | **Save project…** (`Ctrl+S`) | Saves project metadata and masks; the source is referenced by path and checksum. | Maintaining reproducible work on the same machine. |
 | **Save portable project as…** | Saves a project and copies the source image into it. | Moving work to another computer or person. |
 | **Relink source as new revision…** | Associates a replacement source after confirmation and invalidates derived masks/runs. | The source pixels changed or moved. It deliberately does not silently reuse old results. |
-| **Export…** (`Ctrl+E`) | Writes masks, tables, recipe/provenance JSON, fractions, and overlays to a chosen folder. | Delivering data outside GST Image. |
+| **Export…** (`Ctrl+E`) | Writes masks, tables, recipe/provenance JSON, fractions, native ROI source crops, per-layer segmentation images, and grouping overlays to a chosen folder. | Delivering data outside GST Image. |
 | **Quit** | Closes the application. | After saving work. |
 | **Analysis > Preview** (`Shift+A`) | Same as the Analysis panel’s Preview button. | Quickly retesting after a small adjustment. |
 
@@ -78,8 +78,9 @@ result on the clipboard.
 
 Lists each ROI and its kind. Clicking an Include or Analysis ROI selects it, turns on
 selected-ROI analysis, restores its saved recipe when present, and selects its latest matching
-particle result. **Delete selected** removes the ROI and layers/results derived from it, so save
-or export first if those data are needed.
+particle result (or its region-classification result when no particle result exists). Region
+classification requires exactly one selected Analysis box. **Delete selected** removes the ROI
+and layers/results derived from it, so save or export first if those data are needed.
 
 ### Measurements
 
@@ -91,4 +92,6 @@ used.
 
 This tab is documented in [review, correction, grouping, and export]
 (review-correction-grouping-export.md). It works only with an active instance layer and never
-changes the underlying segmentation.
+changes the underlying segmentation. It can save a native-resolution grouping-overlay PNG for
+the Analysis box and save its colour graphs as individual/combined PNGs plus a Matplotlib Figure
+pickle.

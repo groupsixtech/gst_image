@@ -26,3 +26,7 @@
 - [x] Added clipboard actions for both the particle-group definition table and statistics table, using tab-separated text suitable for Notepad, Excel, and similar applications.
 - [x] Added a Layers-panel action that copies the active mask as a native-resolution black-and-white ROI image to the clipboard.
 - [x] Preserved independent recipes, result layers, active grouping schemes, particles, masks, and selections per ROI Analysis box; selecting an ROI now switches to its matching saved analysis context.
+- [x] Export now saves native-resolution source crops for every ROI, a crop-aware image for every non-domain segmentation layer, and each particle-grouping overlay cropped to its saved ROI scope.
+- [x] Added **Save grouping overlay image…** to Particle groups; it saves the active grouping over its Analysis-box source crop at native resolution using the export renderer.
+- [x] Added **Save plots as PNG + Matplotlib pickle…** to Color plots; it saves the combined view, each individual graph as PNG, and a reloadable Matplotlib Figure pickle.
+- [x] Region classification now requires one selected Analysis box, loads and computes features only for that crop at Selected ROI resolution, and restores the result to full-source coordinates as an independently scoped layer.

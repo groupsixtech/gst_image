@@ -1,8 +1,10 @@
+import pickle
+
 import cv2
 import numpy as np
 from gst_image_app.mainwindow import MainWindow
 from gst_image_app.range_slider import MetricRangeControl
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QPushButton
 
 from gst_image.analysis.particles import measure_particles
 from gst_image.models import (
@@ -124,9 +126,7 @@ def test_particle_grouping_panel_previews_filters_colors_and_saves(qtbot):
     window._set_dirty(False)
 
 
-def test_color_plots_include_volume_fraction_pie(qtbot, monkeypatch):
-    from PySide6.QtWidgets import QDialog
-
+def test_color_plots_include_volume_fraction_pie(qtbot, tmp_path, monkeypatch):
     window = MainWindow()
     qtbot.addWidget(window)
     labels = np.zeros((40, 60), np.int32)
@@ -139,12 +139,33 @@ def test_color_plots_include_volume_fraction_pie(qtbot, monkeypatch):
         image_height=40,
     )
     window.particles = measure_particles(labels)
-    monkeypatch.setattr(QDialog, "exec", lambda _dialog: None)
+    dialog_buttons = []
+
+    def inspect_dialog(dialog):
+        dialog_buttons.extend(
+            button.text() for button in dialog.findChildren(QPushButton)
+        )
+
+    monkeypatch.setattr(QDialog, "exec", inspect_dialog)
 
     figure = window.plot_particles()
 
     assert len(figure.axes) == 3
     assert figure.axes[2].get_title() == "Particle area share"
+    assert "Save plots as PNG + Matplotlib pickle…" in dialog_buttons
+    monkeypatch.setattr(
+        QFileDialog,
+        "getExistingDirectory",
+        lambda *_args, **_kwargs: str(tmp_path),
+    )
+    written = window.save_color_plots(figure)
+    assert len(written) == 5
+    assert all(path.exists() for path in written)
+    assert len(list(tmp_path.glob("color_plots_particles*.png"))) == 4
+    pickle_path = next(tmp_path.glob("color_plots_particles*.figure.pickle"))
+    with pickle_path.open("rb") as handle:
+        restored = pickle.load(handle)
+    assert len(restored.axes) == 3
 
 
 def test_threshold_method_shows_only_applicable_controls(qtbot):

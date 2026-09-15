@@ -4,10 +4,13 @@ import numpy as np
 from gst_image.analysis.particles import measure_particles
 from gst_image.export import create_overlay, export_analysis
 from gst_image.models import (
+    ROI,
     AnalysisRun,
     ParticleGroup,
     ParticleGrouping,
+    Point,
     ProjectManifest,
+    ROIKind,
     SegmentationLayer,
     SegmentationRecipe,
 )
@@ -60,9 +63,18 @@ def test_saved_particle_grouping_exports_rules_assignments_statistics_and_overla
         image_width=40,
         image_height=30,
     )
+    roi = ROI(
+        name="Export box",
+        kind=ROIKind.ANALYSIS_BOX,
+        shape="rectangle",
+        points=[Point(x=4, y=5), Point(x=35, y=25)],
+    )
     particle_class = next(item for item in manifest.classes if item.preset == "particle")
     layer = SegmentationLayer(
-        name="Particles", kind="instances", class_id=particle_class.id
+        name="Particles",
+        kind="instances",
+        class_id=particle_class.id,
+        scope_roi_ids=[roi.id],
     )
     run = AnalysisRun(
         recipe=SegmentationRecipe(),
@@ -94,6 +106,7 @@ def test_saved_particle_grouping_exports_rules_assignments_statistics_and_overla
             ),
         ],
     )
+    manifest.rois.append(roi)
     manifest.layers.append(layer)
     manifest.runs.append(run)
     manifest.particle_records[layer.id] = particles
@@ -117,6 +130,13 @@ def test_saved_particle_grouping_exports_rules_assignments_statistics_and_overla
     overlay_files = list(destination.glob("particle_grouping_Two_sizes_*.png"))
     assert overlay_files
     grouped_overlay = cv2.imread(str(overlay_files[0]))
-    assert grouped_overlay[15, 10, 2] > grouped_overlay[15, 10, 1]
-    assert grouped_overlay[15, 28, 1] > grouped_overlay[15, 28, 2]
+    assert grouped_overlay.shape[:2] == (21, 32)
+    assert grouped_overlay[10, 6, 2] > grouped_overlay[10, 6, 1]
+    assert grouped_overlay[10, 24, 1] > grouped_overlay[10, 24, 2]
+    roi_files = list(destination.glob("roi_analysis_box_Export_box_*.png"))
+    assert len(roi_files) == 1
+    assert cv2.imread(str(roi_files[0])).shape[:2] == (21, 32)
+    segmentation_files = list(destination.glob("segmentation_overlay_Particles_*.png"))
+    assert len(segmentation_files) == 1
+    assert cv2.imread(str(segmentation_files[0])).shape[:2] == (21, 32)
     assert np.array_equal(labels, original_labels)

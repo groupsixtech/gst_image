@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pickle
 from pathlib import Path
 
 import cv2
@@ -62,7 +63,7 @@ from gst_image.analysis.groups import ParticleGroupingResult
 from gst_image.analysis.particles import merge_particle_labels, split_particle_by_line
 from gst_image.analysis.preprocess import to_gray
 from gst_image.analysis.regions import REGION_CLASSIFICATION_MAX_PIXELS
-from gst_image.export import export_analysis
+from gst_image.export import create_particle_group_overlay, export_analysis
 from gst_image.image_io import (
     load_image,
     load_region,
@@ -285,6 +286,102 @@ def _analyze_region_preview(
         progress=progress,
         cancelled=cancelled,
     )
+
+
+def _region_training_labels(
+    strokes: list[TrainingStroke],
+    class_ids: list[str],
+    bounds: tuple[int, int, int, int],
+    shape: tuple[int, int],
+) -> np.ndarray:
+    """Rasterize source-coordinate training strokes into one selected ROI crop."""
+    left, top, right, bottom = bounds
+    height, width = shape
+    scale_x = width / (right - left)
+    scale_y = height / (bottom - top)
+    labels = np.zeros((height, width), dtype=np.uint16)
+    class_values = {class_id: index + 1 for index, class_id in enumerate(class_ids)}
+    for stroke in strokes:
+        value = 0 if stroke.erase else class_values.get(stroke.class_id)
+        if value is None or not stroke.points:
+            continue
+        coordinates = [
+            (
+                round((point.x - left) * scale_x),
+                round((point.y - top) * scale_y),
+            )
+            for point in stroke.points
+        ]
+        radius = max(1, round(stroke.radius_px * (scale_x + scale_y) / 2))
+        if len(coordinates) == 1:
+            cv2.circle(labels, coordinates[0], radius, value, cv2.FILLED)
+        else:
+            cv2.line(
+                labels,
+                coordinates[0],
+                coordinates[-1],
+                value,
+                2 * radius + 1,
+            )
+    return labels
+
+
+def _classify_source_region(
+    path: str | Path,
+    bounds: tuple[int, int, int, int],
+    resolution: int,
+    training_labels: np.ndarray,
+    recipe: RegionClassifierRecipe,
+    roi_id: str,
+    *,
+    progress,
+    cancelled,
+):
+    """Load and classify only one source ROI at its selected working resolution."""
+    progress(0.01, "Loading selected region-classification ROI")
+    region, actual_bounds = load_region(
+        path, bounds, color=True, scale_percent=resolution
+    )
+    if training_labels.shape != region.shape[:2]:
+        training_labels = cv2.resize(
+            training_labels,
+            (region.shape[1], region.shape[0]),
+            interpolation=cv2.INTER_NEAREST,
+        )
+    result = classify_regions(
+        region,
+        training_labels,
+        recipe,
+        progress=progress,
+        cancelled=cancelled,
+    )
+    return result, actual_bounds, roi_id
+
+
+def _save_color_plot_outputs(
+    figure, destination: str | Path, stem: str
+) -> list[Path]:
+    """Save the combined plot, every individual graph, and a reloadable Figure pickle."""
+    output = Path(destination)
+    output.mkdir(parents=True, exist_ok=True)
+    written: list[Path] = []
+    combined = output / f"{stem}.png"
+    figure.savefig(combined, dpi=200, bbox_inches="tight")
+    written.append(combined)
+    figure.canvas.draw()
+    renderer = figure.canvas.get_renderer()
+    graph_names = ("size_histogram", "size_circularity", "volume_fraction")
+    for axis, graph_name in zip(figure.axes, graph_names, strict=False):
+        extent = axis.get_tightbbox(renderer).expanded(1.04, 1.08)
+        extent = extent.transformed(figure.dpi_scale_trans.inverted())
+        target = output / f"{stem}_{graph_name}.png"
+        figure.savefig(target, dpi=200, bbox_inches=extent)
+        written.append(target)
+    pickle_path = output / f"{stem}.figure.pickle"
+    with pickle_path.open("wb") as handle:
+        pickle.dump(figure, handle, protocol=pickle.HIGHEST_PROTOCOL)
+    written.append(pickle_path)
+    return written
 
 
 def _particle_volume_pie_data(
@@ -927,7 +1024,8 @@ class MainWindow(QMainWindow):
         layout.addLayout(class_buttons)
         self.train_regions_button = QPushButton("Train / update region classifier")
         self.train_regions_button.setToolTip(
-            "Classifies the overview image, which must be no larger than 4.5 megapixels."
+            "Classifies the selected Analysis box at Selected ROI resolution; "
+            "the crop must be no larger than 4.5 megapixels."
         )
         self.train_regions_button.clicked.connect(self.train_regions)
         layout.addWidget(self.train_regions_button)
@@ -998,6 +1096,9 @@ class MainWindow(QMainWindow):
         self.grouping_panel.saveRequested.connect(self._save_particle_grouping)
         self.grouping_panel.deleteRequested.connect(self._delete_particle_grouping)
         self.grouping_panel.plotRequested.connect(self.plot_particles)
+        self.grouping_panel.saveImageRequested.connect(
+            self.save_particle_grouping_overlay
+        )
         # Compatibility alias for callers that previously accessed the simple group table.
         self.groups_table = self.grouping_panel.groups_table
         group_scroll = QScrollArea()
@@ -1277,6 +1378,11 @@ class MainWindow(QMainWindow):
             and roi.kind in {ROIKind.INCLUDE, ROIKind.ANALYSIS_BOX}
         ]
         return candidates[0] if len(candidates) == 1 else None
+
+    def _selected_analysis_box(self) -> ROI | None:
+        """Return the one selected Analysis box used for region classification."""
+        roi = self._selected_full_resolution_roi()
+        return roi if roi is not None and roi.kind == ROIKind.ANALYSIS_BOX else None
 
     def _roi_bounds(self, roi: ROI) -> tuple[int, int, int, int]:
         xs = [point.x for point in roi.points]
@@ -2190,30 +2296,77 @@ class MainWindow(QMainWindow):
                 cv2.line(self.training_labels, coords[0], coords[-1], label, 2 * radius + 1)
 
     def train_regions(self) -> None:
-        if self.preview_bgr is None or self.training_labels is None or self.worker is not None:
+        if self.manifest is None or self.worker is not None:
             return
-        height, width = self.preview_bgr.shape[:2]
-        pixel_count = width * height
-        if pixel_count > REGION_CLASSIFICATION_MAX_PIXELS:
-            recommended = self._maximum_region_overview_resolution()
-            QMessageBox.warning(
+        roi = self._selected_analysis_box()
+        if roi is None:
+            QMessageBox.information(
                 self,
-                "Region-classification overview is too large",
-                f"The current overview is {width} x {height} pixels "
-                f"({pixel_count / 1_000_000:.2f} MP). Region classification is "
-                "limited to 4.5 MP to control memory use.\n\n"
-                f"Set Overview resolution to {recommended}% or lower, click "
-                "Show overview, and then train again. Existing class-seed strokes "
-                "will be rescaled automatically. Selected-ROI resolution does not "
-                "affect region classification.",
+                "Region-classification Analysis box",
+                "Select exactly one Analysis box before training the region classifier.",
             )
             return
-        recipe = self.manifest.region_recipes[-1] if self.manifest.region_recipes else RegionClassifierRecipe()
+        if self.current_path is None or not self.current_path.exists():
+            QMessageBox.critical(
+                self,
+                "Source missing",
+                "Relink the source image before training region classification.",
+            )
+            return
+        resolution = self.roi_resolution.value()
+        if resolution == 0:
+            QMessageBox.information(
+                self,
+                "Selected ROI resolution",
+                "Choose a Selected ROI resolution above 0% before training.",
+            )
+            return
+        bounds = self._roi_bounds(roi)
+        left, top, right, bottom = bounds
+        width = max(1, round((right - left) * resolution / 100))
+        height = max(1, round((bottom - top) * resolution / 100))
+        pixel_count = width * height
+        if pixel_count > REGION_CLASSIFICATION_MAX_PIXELS:
+            recommended = self._maximum_region_roi_resolution(bounds)
+            QMessageBox.warning(
+                self,
+                "Region-classification ROI is too large",
+                f"The selected Analysis box would be {width} x {height} pixels "
+                f"({pixel_count / 1_000_000:.2f} MP). Region classification is "
+                "limited to 4.5 MP to control memory use.\n\n"
+                f"Set Selected ROI resolution to {recommended}% or lower and train "
+                "again. Existing class-seed strokes will be rescaled automatically.",
+            )
+            return
+        trainable = self._trainable_classes()
+        training_labels = _region_training_labels(
+            self.manifest.training_strokes,
+            [item.id for item in trainable],
+            bounds,
+            (height, width),
+        )
+        painted_classes = np.unique(training_labels[training_labels > 0])
+        if len(painted_classes) < 2:
+            QMessageBox.information(
+                self,
+                "More class seeds required",
+                "Paint training strokes for at least two region classes inside the "
+                "selected Analysis box.",
+            )
+            return
+        recipe = (
+            self.manifest.region_recipes[-1]
+            if self.manifest.region_recipes
+            else RegionClassifierRecipe()
+        )
         worker = FunctionWorker(
-            classify_regions,
-            self.preview_bgr,
-            self.training_labels.copy(),
+            _classify_source_region,
+            self.current_path,
+            bounds,
+            resolution,
+            training_labels,
             recipe,
+            roi.id,
             with_callbacks=True,
         )
         self.worker = worker
@@ -2226,39 +2379,77 @@ class MainWindow(QMainWindow):
         self.cancel_button.setEnabled(True)
         self.thread_pool.start(worker)
 
-    def _maximum_region_overview_resolution(self) -> int:
-        if self.manifest is None:
-            return 1
+    @staticmethod
+    def _maximum_region_roi_resolution(
+        bounds: tuple[int, int, int, int]
+    ) -> int:
+        left, top, right, bottom = bounds
         for percent in range(100, 0, -1):
-            width = max(1, round(self.manifest.image_width * percent / 100))
-            height = max(1, round(self.manifest.image_height * percent / 100))
+            width = max(1, round((right - left) * percent / 100))
+            height = max(1, round((bottom - top) * percent / 100))
             if width * height <= REGION_CLASSIFICATION_MAX_PIXELS:
                 return percent
         return 1
 
-    def _region_result(self, result) -> None:
-        full_labels = cv2.resize(
+    def _region_result(self, payload) -> None:
+        result, bounds, roi_id = payload
+        left, top, right, bottom = bounds
+        roi_labels = cv2.resize(
             result.labels.astype(np.uint16),
-            (self.manifest.image_width, self.manifest.image_height),
+            (right - left, bottom - top),
             interpolation=cv2.INTER_NEAREST,
         )
-        layer = next((item for item in self.manifest.layers if item.kind == "multiclass"), None)
+        full_labels = np.zeros(
+            (self.manifest.image_height, self.manifest.image_width), dtype=np.uint16
+        )
+        full_labels[top:bottom, left:right] = roi_labels
+        layer = next(
+            (
+                item
+                for item in self.manifest.layers
+                if item.kind == "multiclass" and item.scope_roi_ids == [roi_id]
+            ),
+            None,
+        )
         trainable = self._trainable_classes()
         mapping = {index + 1: item.id for index, item in enumerate(trainable)}
+        roi = next((item for item in self.manifest.rois if item.id == roi_id), None)
         if layer is None:
             layer = SegmentationLayer(
-                name="Weld regions", kind="multiclass", class_value_map=mapping
+                name=f"Region classification — {roi.name if roi else roi_id[:8]}",
+                kind="multiclass",
+                scope_roi_ids=[roi_id],
+                class_value_map=mapping,
             )
             self.manifest.layers.append(layer)
         else:
             layer.class_value_map = mapping
+        result.summary.update(
+            {
+                "analysis_scope": "selected_roi",
+                "scope_roi_id": roi_id,
+                "processed_width_px": result.labels.shape[1],
+                "processed_height_px": result.labels.shape[0],
+                "source_bounds": [left, top, right, bottom],
+            }
+        )
         self.layer_masks[layer.id] = full_labels
         self.current_layer_id = layer.id
         self.current_labels = full_labels.astype(np.int32)
         self.current_mask = None
+        self.particles = []
+        self.grouping_preview = None
+        self.grouping_preview_definition = None
+        self.manifest.edits.append(
+            EditEvent(
+                action="classify_regions",
+                target_id=layer.id,
+                details={"scope_roi_id": roi_id},
+            )
+        )
         self._render_visible_layers()
         self._show_summary(result.summary)
-        self._refresh_layers()
+        self._refresh_all()
         self._set_dirty(True)
 
     def _select_particle(self, point: QPointF) -> None:
@@ -2758,6 +2949,113 @@ class MainWindow(QMainWindow):
         self._render_visible_layers()
         self._set_dirty(True)
 
+    def save_particle_grouping_overlay(self) -> Path | None:
+        """Save the active grouping as a native-resolution Analysis-box overlay."""
+        if self.manifest is None or self.current_layer_id is None:
+            return None
+        if self._pending_grouping_preview is not None:
+            self.grouping_preview_timer.stop()
+            self._apply_pending_grouping_preview()
+        grouping = self.grouping_preview_definition
+        layer = next(
+            (
+                item
+                for item in self.manifest.layers
+                if item.id == self.current_layer_id and item.kind == "instances"
+            ),
+            None,
+        )
+        if layer is None or grouping is None:
+            QMessageBox.information(
+                self,
+                "Grouping overlay image",
+                "Select an instance layer with an active particle grouping first.",
+            )
+            return None
+        if layer.scope_roi_ids:
+            roi = next(
+                (
+                    item
+                    for item in self.manifest.rois
+                    if layer.scope_roi_ids == [item.id]
+                    and item.kind == ROIKind.ANALYSIS_BOX
+                ),
+                None,
+            )
+        else:
+            roi = self._selected_analysis_box()
+        if roi is None:
+            QMessageBox.information(
+                self,
+                "Grouping overlay image",
+                "Select the Analysis box associated with this particle layer first.",
+            )
+            return None
+        suggested_directory = (
+            self.current_path.parent if self.current_path is not None else Path.cwd()
+        )
+        suggested = suggested_directory / (
+            f"particle_grouping_{grouping.id[:8]}_{roi.id[:8]}.png"
+        )
+        selected, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save particle-grouping overlay",
+            str(suggested),
+            "PNG images (*.png)",
+        )
+        if not selected:
+            return None
+        target = Path(selected)
+        if target.suffix.lower() != ".png":
+            target = target.with_suffix(".png")
+        try:
+            image, bounds = load_region(
+                self.current_path,
+                self._roi_bounds(roi),
+                color=True,
+                scale_percent=100,
+            )
+            left, top, right, bottom = bounds
+            labels = np.asarray(self.layer_masks[layer.id])[top:bottom, left:right]
+            particles = self.manifest.particle_records.get(layer.id, self.particles)
+            overlay = create_particle_group_overlay(
+                image, labels, particles, grouping
+            )
+            if not cv2.imwrite(str(target), overlay):
+                raise OSError(f"Could not write image: {target}")
+        except Exception as error:
+            QMessageBox.critical(self, "Grouping overlay save failed", str(error))
+            return None
+        self.statusBar().showMessage(
+            f"Saved native-resolution grouping overlay to {target}", 5000
+        )
+        return target
+
+    def save_color_plots(self, figure) -> list[Path]:
+        """Choose a directory and save every color graph plus its Matplotlib Figure."""
+        output = QFileDialog.getExistingDirectory(
+            self, "Choose color-plot export directory"
+        )
+        if not output:
+            return []
+        if self.grouping_preview_definition is not None:
+            context_id = self.grouping_preview_definition.id[:8]
+        elif self.current_layer_id is not None:
+            context_id = self.current_layer_id[:8]
+        else:
+            context_id = "particles"
+        stem = f"color_plots_{context_id}"
+        try:
+            written = _save_color_plot_outputs(figure, output, stem)
+        except Exception as error:
+            QMessageBox.critical(self, "Color-plot save failed", str(error))
+            return []
+        self.statusBar().showMessage(
+            f"Saved {len(written) - 1} plot images and one Matplotlib pickle to {output}",
+            6000,
+        )
+        return written
+
     def plot_particles(self) -> object | None:
         if not self.particles:
             return
@@ -2869,6 +3167,9 @@ class MainWindow(QMainWindow):
             axes[1].legend(fontsize="small")
         figure.tight_layout()
         layout.addWidget(canvas)
+        save_plots = QPushButton("Save plots as PNG + Matplotlib pickle…")
+        save_plots.clicked.connect(lambda: self.save_color_plots(figure))
+        layout.addWidget(save_plots)
         dialog.exec()
         return figure
 
@@ -3131,17 +3432,22 @@ class MainWindow(QMainWindow):
             recipe = next((value for value in self.manifest.recipes if value.id == roi.recipe_id), None)
             if recipe:
                 self._set_recipe_controls(recipe)
-        candidates = [
+        particle_candidates = [
             layer
             for layer in self.manifest.layers
             if layer.kind == "instances" and layer.scope_roi_ids == [roi.id]
         ]
         target_class_id = self.binary_class.currentData()
         matching_class = [
-            layer for layer in candidates if layer.class_id == target_class_id
+            layer for layer in particle_candidates if layer.class_id == target_class_id
         ]
         if matching_class:
-            candidates = matching_class
+            particle_candidates = matching_class
+        candidates = particle_candidates or [
+            layer
+            for layer in self.manifest.layers
+            if layer.kind == "multiclass" and layer.scope_roi_ids == [roi.id]
+        ]
         if candidates:
             run_order = {run.id: index for index, run in enumerate(self.manifest.runs)}
             layer = max(
@@ -3153,8 +3459,13 @@ class MainWindow(QMainWindow):
                 if layer_item.data(Qt.ItemDataRole.UserRole) == layer.id:
                     self.layers_list.setCurrentItem(layer_item)
                     self.show_selected_layer(layer_item)
+                    detail = (
+                        "and its saved grouping scheme"
+                        if layer.kind == "instances"
+                        else "region-classification result"
+                    )
                     self.statusBar().showMessage(
-                        f"Selected {roi.name}: {layer.name} and its saved grouping scheme",
+                        f"Selected {roi.name}: {layer.name} {detail}",
                         5000,
                     )
                     break

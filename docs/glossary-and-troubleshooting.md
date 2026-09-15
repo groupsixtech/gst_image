@@ -41,7 +41,7 @@ Use this page as a quick reference alongside the training workflow in [Getting s
 | “Select exactly one Include or Analysis box.” | A selected-ROI operation needs one selected ROI of the right type. | In ROIs, select one Include or Analysis box; then Show selected ROI, preview, or run. |
 | “Source changed” or source missing. | The source no longer matches the saved checksum/path. | Use Relink source as new revision. This clears derived analysis deliberately; do not relink casually. |
 | Region classifier needs more classes. | Seeds contain fewer than two positive class labels. | Paint clean examples for at least two classes, then train. |
-| Region classification exceeds 4.5 MP. | Feature computation has a memory guard. | Reduce Overview resolution, click Show overview, then train. Selected ROI resolution is unrelated. |
+| Region classification exceeds 4.5 MP. | Feature computation has a memory guard. | Select one Analysis box and reduce Selected ROI resolution to the percentage shown in the warning, then train again. |
 | Region prediction is wrong only where appearance changes. | Training examples do not cover that variation. | Add clean strokes for the correct class in that appearance and retrain; do not simply add more copies of existing examples. |
 | Grouping seems to change the mask. | Grey/coloured overlay may be confused with segmentation editing. | Grouping is non-destructive. Confirm by toggling grouping/layer; only recipe filters and manual edits change instance labels. |
 

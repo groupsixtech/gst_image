@@ -72,12 +72,16 @@ region-classification training, result review, grouping, export, and troubleshoo
    saving the scheme to the project. **Copy group table** and **Copy statistics** place the
    complete tables on the clipboard as tab-separated text for Notepad, Excel, and similar
    applications. **Open color plots** includes size, circularity, and an area-based estimated
-   volume-fraction pie chart in the active ROI's group colors.
+   volume-fraction pie chart in the active ROI's group colors. Its save button writes the
+   combined view, each individual graph as a PNG, and a reloadable Matplotlib Figure pickle.
+   **Save grouping overlay image…** writes the active Analysis box at native resolution with its
+   grouping colours.
 7. For macro zones, follow the [assisted region-classification guide](docs/region-classification.md)
-   to paint and erase example strokes for Weld, HAZ, Base, or custom classes and train the
-   classifier.
-8. Save the project and export masks, overlays, measurements, fractions, particle CSVs, saved
-   grouping definitions, particle assignments, group statistics, and color grouping overlays.
+   to select one Analysis box, paint and erase example strokes for Weld, HAZ, Base, or custom
+   classes, and train the classifier only within that box at the Selected ROI resolution.
+8. Save the project and export masks, native ROI source images, per-layer segmentation overlays,
+   measurements, fractions, particle CSVs, saved grouping definitions, particle assignments,
+   group statistics, and crop-aware color grouping overlays.
 
 Analysis values have linked sliders and numeric fields for quick tuning and exact entry.
 Calibrated measurements are shown in both physical and pixel units. Layers, ROIs,
@@ -126,7 +130,7 @@ Every saved grouping is tied to its source particle layer. Its statistics includ
 count percentage, total area, analyzed-domain area/estimated volume fraction, border-particle
 count, and size/circularity distributions. Saved schemes are exported to
 `particle_grouping_definitions.csv`, `particle_group_assignments.csv`, and
-`particle_group_statistics.csv`; color grouping overlays are exported as PNG files.
+`particle_group_statistics.csv`; native Analysis-box grouping overlays are exported as PNG files.
 Selected-ROI recipes and particle layers are likewise tied to their Analysis box. Clicking an
 ROI restores its particle recipe and activates that ROI's most recent matching result layer,
 particle records, mask, and saved grouping scheme, allowing several ROIs to be analyzed and

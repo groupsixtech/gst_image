@@ -44,7 +44,8 @@ materials.
    file-like name. Use **Save portable project as…** when another person needs the source image
    copied into the project.
 10. Choose **File > Export…**, select an output folder, and keep the generated provenance,
-    recipe, masks, tables, and overlay together with any reported results.
+    recipe, masks, tables, native ROI source crops, and segmentation/grouping overlay images
+    together with any reported results.
 
 ## Preview versus final run
 

@@ -21,7 +21,7 @@ touching objects. For explanations and examples of each method, see
 | **Eyedropper sets** | Destination for Eyedropper clicks. | Select manual high/low to sample intensity limits or a class-colour target to sample colour. |
 | **Analyze selected ROI/box only** | Limits final analysis to one selected Include/Analysis ROI. | Tick it and select exactly one ROI in the ROIs tab. Exclude ROIs still apply. Result labels are placed back in source coordinates. |
 | **Show selected ROI** | Loads the selected ROI for display at Selected ROI resolution. | Use before inspecting/tuning fine detail. |
-| **Show overview** | Reloads the whole image at Overview resolution. | Use to return to context or prepare region classification. |
+| **Show overview** | Reloads the whole image at Overview resolution. | Use to return to context or place/select an Analysis box. |
 | **Preview** | Runs a temporary segmentation and shows a mask overlay/summary. | Tune here; `Shift+A` is the shortcut. It never creates a saved layer. |
 | **Run particles — full resolution** | Runs the recipe on original source pixels and creates saved instance/domain layers. | Use only after verifying a preview. It is computationally heavier. |
 | **Cancel** | Requests cancellation of the current background work. | Use if scope/recipe is clearly wrong; wait for controls to re-enable. |

@@ -67,7 +67,8 @@ Open the **Particle groups** tab with an instance layer selected. The panel incl
 | **Add group / Remove group** | Adds or removes a manually defined group. | Use manual groups for protocol-defined, irregular, or named ranges. |
 | **Set color** | Changes selected group overlay/plot colour. | Use high-contrast, consistent colours; colour does not alter membership. |
 | **Copy group table** | Copies group definitions as tab-separated data. | Paste into a spreadsheet or audit note. |
-| **Open color plots** | Opens size/circularity plots and area-based estimated-volume-fraction pie view in group colours. | Use for exploratory review; export tables for reporting. |
+| **Open color plots** | Opens size/circularity plots and an area-based estimated-volume-fraction pie view in group colours. | Use **Save plots as PNG + Matplotlib pickle…** in the plot window to save the combined view, three individual graph PNGs, and a reloadable Figure. |
+| **Save grouping overlay image…** | Saves the active grouping over its Analysis-box source crop. | Produces a native-resolution PNG using the same grouping renderer as Export. |
 | **Copy statistics** | Copies active grouping summary as tab-separated data. | Paste values into a review record or spreadsheet. |
 | **Save / Delete grouping** | Persists or removes the grouping scheme for the source instance layer. | Save after validation; delete only a scheme, not the segmentation layer. |
 
@@ -101,11 +102,17 @@ project additionally copies its source and is the better hand-off format.
 | `recipes.json` and latest `recipe.json` | Segmentation and region-classification settings needed to reproduce work. |
 | `*_mask.tif` | Compressed native-resolution layer masks; instance/multiclass labels are values, not merely pictures. |
 | Particle/summary/fraction CSV and JSON files | Numeric measurements, area fractions, and run summaries for analysis/reporting. |
-| Overlay PNG | Human-readable visual check of layer placement. |
+| `overlay.png` | Human-readable composite of all visible layers over the full source. |
+| `roi_<kind>_<name>_<id>.png` | Native-resolution source crop for every saved ROI. |
+| `segmentation_overlay_<layer>_<id>.png` | Source-plus-segmentation image for each non-domain result layer; an ROI-scoped layer is cropped to its saved scope. |
 | `particle_grouping_definitions.csv` | Exact grouping/filter bounds, colours, and source layer. |
 | `particle_group_assignments.csv` | Per-particle inclusion/group membership. |
 | `particle_group_statistics.csv` | Group count, area, area fraction, estimated fraction, border count, and distributions. |
-| Grouping overlay PNGs | Colour-coded visual audit of each saved grouping. |
+| `particle_grouping_<scheme>_<id>.png` | Colour-coded visual audit of each saved grouping, cropped to its source layer's ROI scope. |
 
 Keep exported recipe/provenance next to any CSV used in a report. A CSV without its analysis domain,
 calibration, recipe, and source identity is difficult to reproduce or defend.
+
+The colour-plot `.figure.pickle` can be reopened in Python with `pickle.load()` and then shown or
+edited with Matplotlib. Python pickle files can execute code while loading, so only open a pickle
+created by this application or another source you trust.

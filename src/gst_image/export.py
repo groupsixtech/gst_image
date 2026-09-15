@@ -14,10 +14,12 @@ import tifffile
 
 from gst_image.analysis.groups import evaluate_particle_grouping, particle_group_statistics
 from gst_image.models import (
+    ROI,
     FractionResults,
     ParticleGrouping,
     ParticleRecord,
     ProjectManifest,
+    SegmentationLayer,
 )
 
 
@@ -32,6 +34,49 @@ def _hex_bgr(color: str) -> tuple[int, int, int]:
 def _safe_filename(value: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("._")
     return cleaned or "layer"
+
+
+def _roi_bounds(
+    roi: ROI, image_width: int, image_height: int
+) -> tuple[int, int, int, int]:
+    """Return a clipped, half-open source-image bounding box for one ROI."""
+    xs = [point.x for point in roi.points]
+    ys = [point.y for point in roi.points]
+    left = min(image_width - 1, max(0, int(np.floor(min(xs)))))
+    top = min(image_height - 1, max(0, int(np.floor(min(ys)))))
+    right = min(image_width, int(np.ceil(max(xs))) + 1)
+    bottom = min(image_height, int(np.ceil(max(ys))) + 1)
+    return left, top, max(left + 1, right), max(top + 1, bottom)
+
+
+def _scope_bounds(
+    manifest: ProjectManifest, scope_roi_ids: Sequence[str]
+) -> tuple[int, int, int, int]:
+    """Return the union bounds of a layer's saved ROI scope, or the full image."""
+    scoped = [roi for roi in manifest.rois if roi.id in scope_roi_ids]
+    if not scoped:
+        return 0, 0, manifest.image_width, manifest.image_height
+    bounds = [
+        _roi_bounds(roi, manifest.image_width, manifest.image_height) for roi in scoped
+    ]
+    return (
+        min(value[0] for value in bounds),
+        min(value[1] for value in bounds),
+        max(value[2] for value in bounds),
+        max(value[3] for value in bounds),
+    )
+
+
+def create_segmentation_layer_overlay(
+    image: np.ndarray,
+    manifest: ProjectManifest,
+    layer: SegmentationLayer,
+    values: np.ndarray,
+) -> np.ndarray:
+    """Render one segmentation layer over an equally sized source image."""
+    visible_layer = layer.model_copy(update={"visible": True})
+    isolated_manifest = manifest.model_copy(update={"layers": [visible_layer]})
+    return create_overlay(image, isolated_manifest, {layer.id: values})
 
 
 def create_overlay(
@@ -262,8 +307,14 @@ def _export_particle_groupings(
                 }
             )
         if source_image is not None and layer_id in masks:
+            left, top, right, bottom = _scope_bounds(
+                manifest, layer.scope_roi_ids if layer else []
+            )
             grouped_overlay = create_particle_group_overlay(
-                source_image, masks[layer_id], records, grouping
+                source_image[top:bottom, left:right],
+                np.asarray(masks[layer_id])[top:bottom, left:right],
+                records,
+                grouping,
             )
             filename = _safe_filename(f"particle_grouping_{grouping.name}_{grouping.id[:8]}")
             cv2.imwrite(str(destination / f"{filename}.png"), grouped_overlay)
@@ -279,6 +330,42 @@ def _export_particle_groupings(
         pd.DataFrame(statistics_rows).to_csv(
             destination / "particle_group_statistics.csv", index=False
         )
+
+
+def _export_roi_and_segmentation_images(
+    destination: Path,
+    manifest: ProjectManifest,
+    masks: Mapping[str, np.ndarray],
+    source_image: np.ndarray | None,
+) -> None:
+    """Write native source ROI crops and crop-aware visual overlays for result layers."""
+    if source_image is None:
+        return
+    for roi in manifest.rois:
+        left, top, right, bottom = _roi_bounds(
+            roi, manifest.image_width, manifest.image_height
+        )
+        filename = _safe_filename(
+            f"roi_{roi.kind.value}_{roi.name}_{roi.id[:8]}"
+        )
+        cv2.imwrite(
+            str(destination / f"{filename}.png"),
+            source_image[top:bottom, left:right],
+        )
+    for layer in manifest.layers:
+        if layer.kind == "domain" or layer.id not in masks:
+            continue
+        left, top, right, bottom = _scope_bounds(manifest, layer.scope_roi_ids)
+        overlay = create_segmentation_layer_overlay(
+            source_image[top:bottom, left:right],
+            manifest,
+            layer,
+            np.asarray(masks[layer.id])[top:bottom, left:right],
+        )
+        filename = _safe_filename(
+            f"segmentation_overlay_{layer.name}_{layer.id[:8]}"
+        )
+        cv2.imwrite(str(destination / f"{filename}.png"), overlay)
 
 
 def export_analysis(
@@ -416,6 +503,7 @@ def export_analysis(
                 100 * group_table["area_fraction"]
             )
         group_table.to_csv(destination / "particle_groups.csv", index=False)
+    _export_roi_and_segmentation_images(destination, manifest, masks, source_image)
     _export_particle_groupings(destination, manifest, masks, source_image)
     pd.DataFrame([item.model_dump() for item in manifest.measurements]).to_csv(
         destination / "measurements.csv", index=False

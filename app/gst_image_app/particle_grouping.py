@@ -43,6 +43,7 @@ class ParticleGroupingPanel(QWidget):
     saveRequested = Signal(object)
     deleteRequested = Signal(str)
     plotRequested = Signal()
+    saveImageRequested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -182,9 +183,14 @@ class ParticleGroupingPanel(QWidget):
         self.preview_status = QLabel("Run particle analysis to create groups")
         self.preview_status.setWordWrap(True)
         layout.addWidget(self.preview_status)
+        visual_buttons = QHBoxLayout()
         plot = QPushButton("Open color plots")
         plot.clicked.connect(self.plotRequested)
-        layout.addWidget(plot)
+        visual_buttons.addWidget(plot)
+        self.save_image_button = QPushButton("Save grouping overlay image…")
+        self.save_image_button.clicked.connect(self.saveImageRequested)
+        visual_buttons.addWidget(self.save_image_button)
+        layout.addLayout(visual_buttons)
 
         self.statistics_table = QTableWidget(0, 8)
         self.statistics_table.setHorizontalHeaderLabels(

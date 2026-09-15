@@ -3,8 +3,8 @@
 Assisted region classification is the tool for broad named regions—such as Weld, HAZ, Base
 Material, or custom zones—when a single bright/dark threshold is not enough. You paint a small
 number of pixels that you know belong to each class. GST Image learns the visual patterns around
-those examples and labels the complete overview. This is **supervised machine learning**: the
-human supplies the teaching labels and must review the predicted result.
+those examples and labels one selected Analysis box. This is **supervised machine learning**:
+the human supplies the teaching labels and must review the predicted result.
 
 For navigation and brush mechanics, see [Workspace and drawing tools](workspace-and-tools.md).
 For small discrete particle/phase objects, use [particle segmentation](particle-segmentation.md)
@@ -28,9 +28,10 @@ The algorithm does not know what “Weld” or “HAZ” means. You must:
 
 ## Training workflow
 
-1. Set **Overview resolution** in Analysis and click **Show overview**. Classification operates on
-   the whole overview, not on selected-ROI preview. The overview must be 4.5 megapixels or less;
-   25% is a good large-image starting point.
+1. Draw and select exactly one **Analysis box** around the region to classify. Set **Selected ROI
+   resolution** in Analysis; 100% uses the native source crop. The resulting crop must be 4.5
+   megapixels or less, so use a lower percentage for a large box. **Show selected ROI** is useful
+   for inspecting the pixels but is not required before training.
 2. Under **Assisted region classes**, choose a class. Use **Add class** and its colour chooser if
    the default names do not match your work.
 3. Activate **Class seed** on the toolbar. Paint clean, interior examples of that class. The
@@ -38,21 +39,23 @@ The algorithm does not know what “Weld” or “HAZ” means. You must:
 4. Choose another class and repeat. At least two class IDs must have painted pixels.
 5. Activate **Seed eraser** to remove an incorrect training stroke. This edits teaching labels
    only; it does not erase a completed prediction.
-6. Click **Train / update region classifier**. It runs in the background and creates/updates a
-   multiclass result layer, normally called **Weld regions**.
+6. Click **Train / update region classifier**. It loads and computes features only for the
+   selected Analysis box, then creates/updates that box's independently scoped multiclass result
+   layer.
 7. Inspect boundaries and interiors while toggling the layer/opacity in Layers. Add examples in
    places it wrongly predicts, retrain, and compare again.
 8. When a local exception remains, select the multiclass result layer, choose the desired class,
    and use **Mask brush** to paint a correction or **Mask eraser** to clear it. Save the project.
 
-Seeds are stored in original image coordinates and replayed when the overview resolution changes.
-The brush size is in source pixels; use `[` and `]` to adjust it. Larger source images can make a
-given brush appear small on a reduced overview, which is expected.
+Seeds are stored in original image coordinates and replayed when either display resolution
+changes. At training time only strokes intersecting the selected Analysis box are rasterized into
+its local crop. The brush size is in source pixels; use `[` and `]` to adjust it. Larger source
+images can make a given brush appear small on a reduced view, which is expected.
 
 ## What GST Image learns
 
-The implementation computes scikit-image `multiscale_basic_features` for every overview pixel.
-The feature stack contains enabled combinations of:
+The implementation computes scikit-image `multiscale_basic_features` for every working-resolution
+pixel in the selected Analysis box. The feature stack contains enabled combinations of:
 
 | Feature family | Plain-language idea | Why it helps |
 | --- | --- | --- |
@@ -72,11 +75,12 @@ uses 80 trees, maximum depth 12, a 15% per-tree training sample, balanced class 
 worker, and a fixed random seed of 0. Those choices make a run reproducible from the same image,
 recipe, and strokes, but they do not remove the need for representative supervision.
 
-Finally, GST Image predicts every overview pixel. It may “snap” class boundaries within a narrow
+Finally, GST Image predicts every pixel in the selected Analysis box. It may “snap” class boundaries within a narrow
 3-pixel band to strong Sobel image gradients using scikit-image watershed. This can align a
 coarse machine-learning boundary to a visible edge; it cannot create a real boundary where the
-image offers no edge evidence. The overview labels are mapped back to source dimensions as a
-multiclass layer.
+image offers no edge evidence. The crop labels are mapped back into full-source coordinates as a
+multiclass layer whose pixels outside that Analysis box remain clear. Other Analysis boxes retain
+their own independent classification layers.
 
 ## Best practices for supervised training
 
@@ -99,20 +103,25 @@ multiclass layer.
 
 ## Worked example: Weld, HAZ, and Base
 
-Open a macrograph at 25% overview. Select Weld, activate Class seed, and paint five short strokes
-well inside visually different weld areas. Select HAZ and paint five strokes around several parts
-of the transition band. Select Base Material and paint five in both bright and darker base areas.
-Train. Suppose darker HAZ is labelled Weld: add two interior HAZ strokes in that darker appearance,
-not on the boundary, and retrain. Suppose a tiny label remains misclassified: exclude it from any
-particle analysis and use Mask brush/eraser on the region result if it matters to the displayed
-zone map. Save the project so the seeds, result, class map, and recipe are auditable.
+Open a macrograph, draw an Analysis box around the macro zone, and select it. Start at a Selected
+ROI resolution that keeps the box below 4.5 MP. Select Weld, activate Class seed, and paint five
+short strokes well inside visually different weld areas. Select HAZ and paint five strokes around
+several parts of the transition band. Select Base Material and paint five in both bright and darker
+base areas. Train. Suppose darker HAZ is labelled Weld: add two interior HAZ strokes in that darker
+appearance, not on the boundary, and retrain. Suppose a tiny label remains misclassified: exclude
+it from any particle analysis and use Mask brush/eraser on the region result if it matters to the
+displayed zone map. Save the project so the seeds, result, class map, scope, and recipe are auditable.
 
 ## Limits and common messages
 
 - **“Paint training strokes for at least two region classes”** — paint at least one stroke for a
-  second class; several samples per class are strongly recommended.
-- **Overview above 4.5 MP** — reduce Overview resolution, click Show overview, and train again.
-  Reducing Selected ROI resolution does not help because training uses the complete overview.
+  second class inside the selected Analysis box; several samples per class are strongly
+  recommended.
+- **No Analysis box selected** — select exactly one ROI whose kind is Analysis box. Include and
+  Exclude ROIs are not region-classification scopes.
+- **Selected Analysis box above 4.5 MP** — reduce Selected ROI resolution to the percentage in the
+  warning and train again. This changes classifier working resolution, not the saved source
+  coordinates of strokes or results.
 - **No editable mask is selected / nothing to paint** — run/training must produce a result first,
   then select a non-domain result layer before Mask brush or Mask eraser can alter it.
 - **Prediction changes after a new seed** — expected. A new seed changes the training set and the

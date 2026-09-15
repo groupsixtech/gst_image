@@ -8,7 +8,9 @@ from gst_image_app.mainwindow import (
     _analyze_region_preview,
     _analyze_source,
     _analyze_source_region,
+    _classify_source_region,
     _particle_volume_pie_data,
+    _region_training_labels,
 )
 from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtGui import QKeySequence
@@ -22,10 +24,12 @@ from gst_image.models import (
     ParticleGroup,
     ParticleGrouping,
     Point,
+    RegionAnalysis,
     ROIKind,
     SegmentationLayer,
     SegmentationRecipe,
     ThresholdMethod,
+    TrainingStroke,
 )
 
 
@@ -309,6 +313,10 @@ def test_region_training_warns_with_safe_overview_resolution(
     window = MainWindow()
     qtbot.addWidget(window)
     window._load_new_image(_source(tmp_path))
+    roi = _rectangle()
+    window.manifest.rois.append(roi)
+    window._refresh_rois()
+    window.rois_list.item(0).setSelected(True)
     window._set_dirty(False)
     monkeypatch.setattr(mainwindow_module, "REGION_CLASSIFICATION_MAX_PIXELS", 100)
     messages = []
@@ -323,14 +331,88 @@ def test_region_training_warns_with_safe_overview_resolution(
     assert window.worker is None
     assert len(messages) == 1
     title, message = messages[0]
-    assert title == "Region-classification overview is too large"
-    assert "15 x 10 pixels" in message
-    assert "20% or lower" in message
-    assert "Selected-ROI resolution does not affect" in message
+    assert title == "Region-classification ROI is too large"
+    assert "21 x 17 pixels" in message
+    assert "Selected ROI resolution to 54% or lower" in message
 
     window._activate_tool("select")
     qtbot.keyClick(window.canvas, Qt.Key.Key_BracketRight)
     assert window.brush_radius.value() == 12
+
+
+def test_region_training_uses_only_selected_analysis_box(qtbot, tmp_path):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_new_image(_source(tmp_path))
+    roi = _rectangle("Classifier box")
+    window.manifest.rois.append(roi)
+    class_ids = [item.id for item in window._trainable_classes()[:2]]
+    window.manifest.training_strokes.extend(
+        [
+            TrainingStroke(
+                class_id=class_ids[0],
+                points=[Point(x=14, y=12)],
+                radius_px=1,
+            ),
+            TrainingStroke(
+                class_id=class_ids[1],
+                points=[Point(x=26, y=20)],
+                radius_px=1,
+            ),
+            TrainingStroke(
+                class_id=class_ids[0],
+                points=[Point(x=50, y=35)],
+                radius_px=1,
+            ),
+        ]
+    )
+    window._refresh_rois()
+    window.rois_list.item(0).setSelected(True)
+    started = []
+    window.thread_pool = SimpleNamespace(start=started.append)
+
+    window.train_regions()
+
+    assert len(started) == 1
+    worker = started[0]
+    assert worker.function is _classify_source_region
+    assert worker.args[1] == (10, 8, 31, 25)
+    assert worker.args[2] == 100
+    assert worker.args[3].shape == (17, 21)
+    assert set(np.unique(worker.args[3])) == {0, 1, 2}
+    assert worker.args[5] == roi.id
+
+    local_labels = np.ones((17, 21), dtype=np.int32)
+    local_labels[:, 11:] = 2
+    window._region_result(
+        (RegionAnalysis(local_labels, [1, 2], {"training_pixels": 10}), worker.args[1], roi.id)
+    )
+    layer = next(item for item in window.manifest.layers if item.kind == "multiclass")
+    saved = window.layer_masks[layer.id]
+    assert layer.scope_roi_ids == [roi.id]
+    assert saved.shape == (40, 60)
+    assert not np.any(saved[:8])
+    assert not np.any(saved[:, :10])
+    assert set(np.unique(saved[8:25, 10:31])) == {1, 2}
+    window.worker = None
+    window._set_dirty(False)
+
+
+def test_region_training_label_rasterization_excludes_other_boxes():
+    bounds = (10, 8, 31, 25)
+    strokes = [
+        TrainingStroke(
+            class_id="inside", points=[Point(x=15, y=12)], radius_px=1
+        ),
+        TrainingStroke(
+            class_id="outside", points=[Point(x=50, y=35)], radius_px=1
+        ),
+    ]
+
+    labels = _region_training_labels(strokes, ["inside", "outside"], bounds, (17, 21))
+
+    assert np.any(labels == 1)
+    assert not np.any(labels == 2)
 
 
 def test_measurement_text_includes_calibrated_and_pixel_lengths(qtbot, tmp_path):
@@ -528,6 +610,60 @@ def test_copy_current_roi_mask_places_native_binary_crop_on_clipboard(qtbot, tmp
     assert image.pixelColor(0, 0).red() == 0
     assert image.pixelColor(2, 2).red() == 255
     assert "Copy ROI" in window.statusBar().currentMessage()
+    window._set_dirty(False)
+
+
+def test_save_particle_grouping_overlay_writes_native_roi_image(
+    qtbot, tmp_path, monkeypatch
+):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_new_image(_source(tmp_path))
+    roi = _rectangle("Grouping ROI")
+    layer = SegmentationLayer(
+        name="Grouped particles", kind="instances", scope_roi_ids=[roi.id]
+    )
+    labels = np.zeros((40, 60), dtype=np.int32)
+    cv2.circle(labels, (20, 16), 4, 1, cv2.FILLED)
+    particles = measure_particles(labels)
+    grouping = ParticleGrouping(
+        name="Presentation groups",
+        source_layer_id=layer.id,
+        groups=[
+            ParticleGroup(
+                name="Red particles",
+                color="#ff0000",
+                size_unit="px",
+                size_min=0,
+                size_max=100,
+                circularity_min=0,
+                circularity_max=1,
+            )
+        ],
+    )
+    window.manifest.rois.append(roi)
+    window.manifest.layers.append(layer)
+    window.manifest.particle_records[layer.id] = particles
+    window.layer_masks[layer.id] = labels
+    window.current_layer_id = layer.id
+    window.current_labels = labels
+    window.current_mask = (labels > 0).astype(np.uint8)
+    window.particles = particles
+    window._refresh_all()
+    window._preview_particle_grouping(grouping)
+    target = tmp_path / "grouped-roi.png"
+    monkeypatch.setattr(
+        mainwindow_module.QFileDialog,
+        "getSaveFileName",
+        lambda *_args, **_kwargs: (str(target), "PNG images (*.png)"),
+    )
+
+    saved = window.save_particle_grouping_overlay()
+
+    assert saved == target
+    image = cv2.imread(str(target))
+    assert image.shape[:2] == (17, 21)
+    assert image[8, 10, 2] > image[8, 10, 1]
     window._set_dirty(False)
 
 
