@@ -106,7 +106,7 @@ from gst_image.project import (
     save_project,
     validate_project,
 )
-from gst_image_app.canvas import ImageCanvas
+from gst_image_app.canvas import ImageCanvas, distinct_label_colors
 from gst_image_app.particle_grouping import ParticleGroupingPanel
 from gst_image_app.workers import FunctionWorker
 
@@ -669,6 +669,7 @@ class MainWindow(QMainWindow):
         self._build_analysis_dock()
         self._build_results_dock()
         self._connect_canvas()
+        self._update_analysis_scope_label()
         self.mask_commit_timer = QTimer(self)
         self.mask_commit_timer.setSingleShot(True)
         self.mask_commit_timer.setInterval(250)
@@ -720,6 +721,24 @@ class MainWindow(QMainWindow):
         )
         self.increase_brush_action.setEnabled(False)
         edit_menu.addAction(self.increase_brush_action)
+
+        view_menu = self.menuBar().addMenu("&View")
+        self.distinct_particle_colors_action = QAction(
+            "Colour each particle individually", self
+        )
+        self.distinct_particle_colors_action.setCheckable(True)
+        self.distinct_particle_colors_action.setShortcut(QKeySequence("Shift+C"))
+        self.distinct_particle_colors_action.setShortcutContext(
+            Qt.ShortcutContext.ApplicationShortcut
+        )
+        self.distinct_particle_colors_action.setToolTip(
+            "Give every instance label its own colour, so particles that should have "
+            "been separated or joined stand out. Toggle off for the standard mask."
+        )
+        self.distinct_particle_colors_action.toggled.connect(
+            self._distinct_particle_colors_toggled
+        )
+        view_menu.addAction(self.distinct_particle_colors_action)
 
         analysis_menu = self.menuBar().addMenu("&Analysis")
         self.preview_action = QAction("Preview", self)
@@ -804,24 +823,23 @@ class MainWindow(QMainWindow):
         self.illumination.setChecked(True)
         self.split_touching = QCheckBox("Watershed split touching particles")
         self.split_touching.setChecked(True)
-        self.selected_roi_only = QCheckBox("Analyze selected ROI/box only")
         self.overview_resolution = QSpinBox()
         self.overview_resolution.setRange(0, 100)
         self.overview_resolution.setSuffix("%")
         self.overview_resolution.setValue(25)
         self.overview_resolution.setToolTip(
-            "Percentage of native width and height; 100% loads the full overview."
+            "Display and preview percentage of native width and height; 100% loads the "
+            "full overview. Run particles always analyzes the original resolution."
         )
         self.roi_resolution = QSpinBox()
         self.roi_resolution.setRange(0, 100)
         self.roi_resolution.setSuffix("%")
         self.roi_resolution.setValue(100)
         self.roi_resolution.setToolTip(
-            "Independent resolution for the selected Include/Analysis ROI."
+            "Display and preview resolution for the selected Include/Analysis ROI, also "
+            "used by region classification. Run particles always analyzes the original "
+            "resolution."
         )
-        self.preview_resolution = QComboBox()
-        self.preview_resolution.addItem("Fast overview", "overview")
-        self.preview_resolution.addItem("Selected ROI at full resolution", "roi_full")
         self.eyedropper_target = QComboBox()
         self.eyedropper_target.addItem("Manual upper threshold", "threshold_high")
         self.eyedropper_target.addItem("Manual lower threshold", "threshold_low")
@@ -961,7 +979,6 @@ class MainWindow(QMainWindow):
         )
         form.addRow("Overview resolution", overview_control)
         form.addRow("Selected ROI resolution", roi_resolution_control)
-        form.addRow("Preview resolution", self.preview_resolution)
         form.addRow("Eyedropper sets", self.eyedropper_target)
         self.sauvola_window_control, self.window_size_slider = _slider_control(
             self.window_size
@@ -1031,7 +1048,13 @@ class MainWindow(QMainWindow):
         form.addRow("Brush radius (px)", brush_control)
         form.addRow(self.brush_defaults_button)
         layout.addLayout(form)
-        layout.addWidget(self.selected_roi_only)
+        self.analysis_scope_label = QLabel()
+        self.analysis_scope_label.setWordWrap(True)
+        self.analysis_scope_label.setToolTip(
+            "Selecting exactly one Include or Analysis box scopes the preview and the "
+            "final run to that box; otherwise both cover the whole image."
+        )
+        layout.addWidget(self.analysis_scope_label)
         display_row = QHBoxLayout()
         self.full_resolution_button = QPushButton("Show selected ROI")
         self.full_resolution_button.clicked.connect(self.show_full_resolution_roi)
@@ -1066,10 +1089,8 @@ class MainWindow(QMainWindow):
             self.polarity,
             self.overview_resolution,
             self.roi_resolution,
-            self.preview_resolution,
             self.illumination,
             self.split_touching,
-            self.selected_roi_only,
             self.window_size,
             self.sauvola_k,
             self.gaussian_block,
@@ -1181,6 +1202,18 @@ class MainWindow(QMainWindow):
         self.copy_roi_mask_button = QPushButton("Copy ROI mask image")
         self.copy_roi_mask_button.clicked.connect(self.copy_current_roi_mask)
         layer_layout.addWidget(self.copy_roi_mask_button)
+        self.distinct_particle_colors = QCheckBox("Colour each particle individually")
+        self.distinct_particle_colors.setToolTip(
+            self.distinct_particle_colors_action.toolTip()
+        )
+        # Keep the panel checkbox and the View-menu action as one toggle.
+        self.distinct_particle_colors.toggled.connect(
+            self.distinct_particle_colors_action.setChecked
+        )
+        self.distinct_particle_colors_action.toggled.connect(
+            self.distinct_particle_colors.setChecked
+        )
+        layer_layout.addWidget(self.distinct_particle_colors)
         self.layer_opacity = QDoubleSpinBox()
         self.layer_opacity.setRange(0, 1)
         self.layer_opacity.setSingleStep(0.05)
@@ -1360,6 +1393,22 @@ class MainWindow(QMainWindow):
         self.confirmed_preview_scope_ids = []
         if hasattr(self, "preview_status"):
             self.preview_status.setText("Preview parameters not confirmed")
+        self._update_analysis_scope_label()
+
+    def _update_analysis_scope_label(self) -> None:
+        """Show the scope implied by the current Include/Analysis box selection."""
+        if not hasattr(self, "analysis_scope_label"):
+            return
+        roi = self._selected_full_resolution_roi()
+        if roi is None:
+            self.analysis_scope_label.setText(
+                "Scope: whole image — select one Include or Analysis box to scope "
+                "preview and analysis to it."
+            )
+        else:
+            self.analysis_scope_label.setText(
+                f"Scope: {roi.name} — preview and Run particles use this box only."
+            )
 
     def _manual_threshold_low_changed(self, value: int) -> None:
         """Keep the inclusive manual threshold endpoints from crossing."""
@@ -1904,17 +1953,7 @@ class MainWindow(QMainWindow):
             )
             return
         control_recipe = self._recipe_from_controls()
-        selected_roi = None
-        if self.selected_roi_only.isChecked():
-            selected_roi = self._selected_full_resolution_roi()
-            if selected_roi is None:
-                QMessageBox.information(
-                    self,
-                    "Selected-ROI analysis",
-                    "Select exactly one Include or Analysis box before running "
-                    "a selected-ROI analysis.",
-                )
-                return
+        selected_roi = self._selected_full_resolution_roi()
         self.run_scope_ids = [selected_roi.id] if selected_roi is not None else []
         confirmed_matches = (
             self.confirmed_preview_recipe is not None
@@ -2170,15 +2209,8 @@ class MainWindow(QMainWindow):
             return
         scope_ids: list[str] = []
         targets = available
-        if self.selected_roi_only.isChecked():
-            selected = self._selected_analysis_box()
-            if selected is None:
-                QMessageBox.information(
-                    self,
-                    "Selected-ROI analysis",
-                    "Select exactly one Analysis box before running Cellpose.",
-                )
-                return
+        selected = self._selected_analysis_box()
+        if selected is not None:
             scope_ids = [selected.id]
             targets = [selected]
         recipe = self._cellpose_recipe_dialog(targets)
@@ -2344,7 +2376,8 @@ class MainWindow(QMainWindow):
     def run_preview_segmentation(self) -> None:
         if self.preview_bgr is None or self.manifest is None or self.worker is not None:
             return
-        selected_roi_preview = self.preview_resolution.currentData() == "roi_full"
+        roi = self._selected_full_resolution_roi()
+        selected_roi_preview = roi is not None
         resolution = (
             self.roi_resolution.value()
             if selected_roi_preview
@@ -2354,25 +2387,17 @@ class MainWindow(QMainWindow):
             QMessageBox.information(
                 self,
                 "Preview resolution",
-                "Choose a resolution above 0% before running segmentation preview.",
+                "Choose a "
+                + ("Selected ROI" if selected_roi_preview else "Overview")
+                + " preview resolution above 0% before running segmentation preview.",
             )
             return
         if selected_roi_preview:
-            roi = self._selected_full_resolution_roi()
-            if roi is None:
-                QMessageBox.information(
-                    self,
-                    "Selected-ROI preview",
-                    "Select exactly one Include or Analysis box first.",
-                )
-                return
-            self.selected_roi_only.setChecked(True)
             scope_ids = [roi.id]
             if not self.show_full_resolution_roi():
                 return
         else:
-            selected = self.rois_list.selectedItems() if self.selected_roi_only.isChecked() else []
-            scope_ids = [item.data(Qt.ItemDataRole.UserRole) for item in selected]
+            scope_ids = []
             if not self.show_overview():
                 return
         recipe = self._recipe_from_controls()
@@ -2420,8 +2445,8 @@ class MainWindow(QMainWindow):
         was_full_resolution = self._pending_preview_full_resolution
         pending_resolution = self._pending_preview_resolution
         current_recipe = self._recipe_from_controls()
-        selected = self.rois_list.selectedItems() if self.selected_roi_only.isChecked() else []
-        current_scope_ids = [item.data(Qt.ItemDataRole.UserRole) for item in selected]
+        current_roi = self._selected_full_resolution_roi()
+        current_scope_ids = [current_roi.id] if current_roi is not None else []
         unchanged = (
             pending_recipe is not None
             and pending_scope_ids == current_scope_ids
@@ -3189,15 +3214,28 @@ class MainWindow(QMainWindow):
             scope_name = roi.name
         else:
             scope_name = "full image"
-        mask = np.ascontiguousarray((values > 0).astype(np.uint8) * 255)
-        height, width = mask.shape[:2]
-        image = QImage(
-            mask.data,
-            width,
-            height,
-            mask.strides[0],
-            QImage.Format.Format_Grayscale8,
-        ).copy()
+        height, width = values.shape[:2]
+        if layer.kind == "instances" and self.distinct_particle_colors_action.isChecked():
+            lookup = distinct_label_colors(int(values.max()))
+            pixels = np.ascontiguousarray(
+                lookup[np.clip(values, 0, lookup.shape[0] - 1)]
+            )
+            image = QImage(
+                pixels.data,
+                width,
+                height,
+                pixels.strides[0],
+                QImage.Format.Format_RGB888,
+            ).copy()
+        else:
+            pixels = np.ascontiguousarray((values > 0).astype(np.uint8) * 255)
+            image = QImage(
+                pixels.data,
+                width,
+                height,
+                pixels.strides[0],
+                QImage.Format.Format_Grayscale8,
+            ).copy()
         QApplication.clipboard().setImage(image)
         self.statusBar().showMessage(
             f"Copied {layer.name} mask for {scope_name} ({width} × {height} px)",
@@ -3790,6 +3828,11 @@ class MainWindow(QMainWindow):
                 colors = (158, 158, 158)
             elif (
                 layer.kind == "instances"
+                and self.distinct_particle_colors_action.isChecked()
+            ):
+                colors = distinct_label_colors(int(values.max()))
+            elif (
+                layer.kind == "instances"
                 and layer.id == self.current_layer_id
                 and self.grouping_preview is not None
                 and self.grouping_preview_definition is not None
@@ -3818,6 +3861,17 @@ class MainWindow(QMainWindow):
                 )
             overlays.append((values, colors, layer.opacity))
         self.canvas.set_composite_overlays(overlays)
+
+    def _distinct_particle_colors_toggled(self, enabled: bool) -> None:
+        """Repaint instance layers per particle, or back to the standard layer colour."""
+        if self.manifest is not None:
+            self._render_visible_layers()
+        self.statusBar().showMessage(
+            "Per-particle colours on — every instance label has its own colour"
+            if enabled
+            else "Per-particle colours off — instance layers use their class colour",
+            4000,
+        )
 
     def _layer_visibility_changed(self, item: QListWidgetItem) -> None:
         if self.manifest is None:
@@ -3948,6 +4002,7 @@ class MainWindow(QMainWindow):
                 ]
             )
         self.rois_list.blockSignals(False)
+        self._update_analysis_scope_label()
 
     def _roi_polygon(self, roi: ROI) -> list[QPointF]:
         points = [QPointF(point.x, point.y) for point in roi.points]
@@ -3966,7 +4021,7 @@ class MainWindow(QMainWindow):
         roi = next((value for value in self.manifest.rois if value.id == roi_id), None)
         if roi is None:
             return
-        self.selected_roi_only.setChecked(True)
+        self._update_analysis_scope_label()
         if roi.recipe_id:
             recipe = next((value for value in self.manifest.recipes if value.id == roi.recipe_id), None)
             if recipe:

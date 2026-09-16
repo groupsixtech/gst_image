@@ -27,10 +27,11 @@ materials.
 4. In the Analysis panel, set **Segmentation class**, **Analysis channel**, and **Particle
    polarity**. For dark inclusions, start with `Grayscale`, `Dark`, `Threshold particles`, and
    `Sauvola`.
-5. Tick **Analyze selected ROI/box only**, select exactly one Include or Analysis ROI in the
-   right-hand ROIs tab, and choose **Selected ROI at full resolution** as the preview mode. Click
-   **Preview**. Alternatively, use **Fast overview** to tune a whole image rapidly. The temporary
-   yellow preview overlay is not a layer or saved result.
+5. Select exactly one Include or Analysis ROI in the right-hand ROIs tab to scope the work to
+   that box, then click **Preview**; the panel's scope line states the scope currently in effect.
+   Previews of a selected box use **Selected ROI resolution**. Leave the list unselected to tune
+   the whole image at **Overview resolution** instead. The temporary yellow preview overlay is not
+   a layer or saved result.
 6. Compare the overlay to the source at several locations: ordinary objects, the smallest object
    you care about, bright/dark background variation, and touching objects. Adjust only one
    relevant setting, preview again, and record the reason. The tuning order and examples are in
@@ -55,7 +56,9 @@ the controls and scope have not changed since that preview; it does not certify 
 accuracy. The final run uses the same recipe on native source pixels, creates an instance layer
 and matching analysis-domain layer, calculates measurements, and can be saved/exported.
 
-Changing a segmentation control, analysis scope, or preview resolution invalidates confirmation.
+Analysis scope is implied by the ROIs tab: with exactly one Include/Analysis box selected both
+Preview and the final run cover that box only, otherwise they cover the whole image. Changing a
+segmentation control, the ROI selection, or a preview resolution invalidates confirmation.
 Run Preview again before relying on the full-resolution button.
 
 ## Practical example: dark pores

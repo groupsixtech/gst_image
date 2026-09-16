@@ -54,6 +54,10 @@ class ParticleGroupingPanel(QWidget):
         self._saved: dict[str, ParticleGrouping] = {}
         self._draft: ParticleGrouping | None = None
         self._size_domain = (0.0, 1.0)
+        self._statistics_rows: list[tuple[list[str], list]] = []
+        self._statistics_total: list[str] = []
+        self._statistics_sort_column: int | None = None
+        self._statistics_sort_descending = False
         self._build_ui()
         self.setEnabled(False)
 
@@ -206,6 +210,13 @@ class ParticleGroupingPanel(QWidget):
             ]
         )
         self.statistics_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        statistics_header = self.statistics_table.horizontalHeader()
+        statistics_header.setSectionsClickable(True)
+        statistics_header.setSortIndicatorShown(True)
+        statistics_header.sectionClicked.connect(self._statistics_header_clicked)
+        self.statistics_table.setToolTip(
+            "Click a column header to sort the groups; the bold Total row always stays last."
+        )
         layout.addWidget(self.statistics_table)
         self.copy_statistics_button = QPushButton("Copy statistics")
         self.copy_statistics_button.clicked.connect(self.copy_statistics_table)
@@ -245,7 +256,7 @@ class ParticleGroupingPanel(QWidget):
         self.size_metric.setCurrentIndex(self.size_metric.findData(metric))
         self._update_domains(metric, self.size_unit.currentData())
         self._load_draft()
-        self.statistics_table.setRowCount(0)
+        self._clear_statistics()
         self.preview_status.setText(
             "Adjust a range for a quick preview, then save the grouping scheme."
             if source_layer_id and particles
@@ -261,24 +272,119 @@ class ParticleGroupingPanel(QWidget):
         self.statistics_table.horizontalHeaderItem(3).setText(
             "Area mm²" if self._calibrated else "Area px²"
         )
-        self.statistics_table.setRowCount(len(values))
-        for row, (name, stats) in enumerate(values.items()):
+        rows: list[tuple[list[str], list]] = []
+        total_count = 0
+        total_count_percent = 0.0
+        total_area: float | None = None
+        total_area_percent: float | None = None
+        for name, stats in values.items():
             size = stats.get("size", {})
             area_fraction = stats.get("area_fraction")
-            cells = [
-                name,
-                str(stats.get("count", 0)),
-                f"{stats.get('count_percent', 0):.3g}",
-                self._format_optional(
-                    stats.get("area_mm2") if self._calibrated else stats.get("area_px")
-                ),
-                "" if area_fraction is None else f"{100 * area_fraction:.6g}",
-                self._format_optional(size.get("mean")),
-                self._format_optional(size.get("median")),
-                self._format_optional(stats.get("circularity", {}).get("mean")),
+            area = stats.get("area_mm2") if self._calibrated else stats.get("area_px")
+            count = int(stats.get("count", 0) or 0)
+            count_percent = float(stats.get("count_percent", 0) or 0.0)
+            area_percent = None if area_fraction is None else 100 * area_fraction
+            mean_size = size.get("mean")
+            median_size = size.get("median")
+            mean_circularity = stats.get("circularity", {}).get("mean")
+            rows.append(
+                (
+                    [
+                        name,
+                        str(count),
+                        f"{count_percent:.3g}",
+                        self._format_optional(area),
+                        self._format_optional(area_percent),
+                        self._format_optional(mean_size),
+                        self._format_optional(median_size),
+                        self._format_optional(mean_circularity),
+                    ],
+                    [
+                        name.casefold(),
+                        float(count),
+                        count_percent,
+                        area,
+                        area_percent,
+                        mean_size,
+                        median_size,
+                        mean_circularity,
+                    ],
+                )
+            )
+            total_count += count
+            total_count_percent += count_percent
+            if area is not None:
+                total_area = (total_area or 0.0) + float(area)
+            if area_percent is not None:
+                total_area_percent = (total_area_percent or 0.0) + area_percent
+        self._statistics_rows = rows
+        # Means and medians are not additive, so the total row leaves them blank.
+        self._statistics_total = (
+            [
+                "Total",
+                str(total_count),
+                f"{total_count_percent:.3g}",
+                self._format_optional(total_area),
+                self._format_optional(total_area_percent),
+                "",
+                "",
+                "",
             ]
-            for column, value in enumerate(cells):
-                self.statistics_table.setItem(row, column, QTableWidgetItem(value))
+            if rows
+            else []
+        )
+        self._render_statistics()
+
+    def _statistics_header_clicked(self, column: int) -> None:
+        """Sort the group rows by the clicked column, keeping the total row last."""
+        if self._statistics_sort_column == column:
+            self._statistics_sort_descending = not self._statistics_sort_descending
+        else:
+            self._statistics_sort_column = column
+            self._statistics_sort_descending = False
+        self.statistics_table.horizontalHeader().setSortIndicator(
+            column,
+            Qt.SortOrder.DescendingOrder
+            if self._statistics_sort_descending
+            else Qt.SortOrder.AscendingOrder,
+        )
+        self._render_statistics()
+
+    @staticmethod
+    def _statistics_sort_key(keys: list, column: int) -> tuple:
+        value = keys[column] if column < len(keys) else None
+        if value is None:
+            # Missing values sort after present ones in either direction.
+            return (1, "" if column == 0 else 0.0)
+        return (0, value)
+
+    def _render_statistics(self) -> None:
+        table = self.statistics_table
+        rows = list(self._statistics_rows)
+        column = self._statistics_sort_column
+        if column is not None:
+            rows.sort(
+                key=lambda row: self._statistics_sort_key(row[1], column),
+                reverse=self._statistics_sort_descending,
+            )
+        total = self._statistics_total
+        table.setRowCount(len(rows) + (1 if total else 0))
+        for row_index, (cells, _keys) in enumerate(rows):
+            for cell_column, value in enumerate(cells):
+                table.setItem(row_index, cell_column, QTableWidgetItem(value))
+        if total:
+            bold = table.font()
+            bold.setBold(True)
+            for cell_column, value in enumerate(total):
+                item = QTableWidgetItem(value)
+                item.setFont(bold)
+                item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+                table.setItem(len(rows), cell_column, item)
+
+    def _clear_statistics(self) -> None:
+        self._statistics_rows = []
+        self._statistics_total = []
+        self.statistics_table.setRowCount(0)
 
     def set_preview_counts(self, included: int, total: int, unclassified: int) -> None:
         self.preview_status.setText(

@@ -2,6 +2,7 @@ import pickle
 
 import cv2
 import numpy as np
+from gst_image_app.canvas import distinct_label_colors
 from gst_image_app.mainwindow import MainWindow
 from gst_image_app.range_slider import MetricRangeControl
 from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QPushButton
@@ -103,7 +104,8 @@ def test_particle_grouping_panel_previews_filters_colors_and_saves(qtbot):
     panel.copy_statistics_table()
     copied_statistics = QApplication.clipboard().text().splitlines()
     assert copied_statistics[0].startswith("Group\tCount\tCount %")
-    assert len(copied_statistics) == 5
+    assert len(copied_statistics) == 6
+    assert copied_statistics[-1].startswith("Total\t")
     overlay = window.canvas._overlay_item.pixmap().toImage()
     left_color = overlay.pixelColor(20, 30)
     right_color = overlay.pixelColor(55, 30)
@@ -124,6 +126,69 @@ def test_particle_grouping_panel_previews_filters_colors_and_saves(qtbot):
     assert manifest.active_particle_groupings[layer.id] == grouping.id
     assert manifest.particle_groupings[0].name == grouping.name
     assert np.array_equal(window.layer_masks[layer.id], labels)
+    window._set_dirty(False)
+
+
+def test_distinct_label_colors_separate_consecutive_labels():
+    colors = distinct_label_colors(64)
+    assert colors.shape == (65, 3)
+    assert tuple(colors[0]) == (0, 0, 0)
+    assert len({tuple(row) for row in colors[1:]}) == 64
+    gaps = np.abs(colors[1:-1].astype(int) - colors[2:].astype(int)).sum(axis=1)
+    assert gaps.min() > 150
+    assert distinct_label_colors(0).shape == (1, 3)
+
+
+def test_per_particle_colour_toggle_switches_the_instance_overlay(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    labels = np.zeros((60, 80), np.int32)
+    cv2.circle(labels, (20, 30), 5, 1, cv2.FILLED)
+    cv2.circle(labels, (55, 30), 10, 2, cv2.FILLED)
+    manifest = ProjectManifest(
+        name="colour toggle",
+        source_path="source.png",
+        source_sha256="0" * 64,
+        image_width=80,
+        image_height=60,
+    )
+    layer = SegmentationLayer(name="Particles", kind="instances")
+    manifest.layers.append(layer)
+    manifest.particle_records[layer.id] = measure_particles(labels)
+    window.manifest = manifest
+    window.current_layer_id = layer.id
+    window.current_labels = labels.copy()
+    window.current_mask = (labels > 0).astype(np.uint8)
+    window.layer_masks[layer.id] = labels.copy()
+    window.particles = manifest.particle_records[layer.id]
+    window.canvas.set_image(np.zeros((60, 80, 3), np.uint8), (80, 60))
+    window._refresh_all()
+    window._render_visible_layers()
+
+    def overlay_colors():
+        image = window.canvas._overlay_item.pixmap().toImage()
+        return image.pixelColor(20, 30), image.pixelColor(55, 30)
+
+    standard = overlay_colors()
+    assert standard[0] == standard[1]
+    assert standard[0].alpha() > 0
+
+    window.distinct_particle_colors_action.setChecked(True)
+    assert window.distinct_particle_colors.isChecked()
+    separated = overlay_colors()
+    assert separated[0] != separated[1]
+    assert separated[0].alpha() > 0
+    assert separated[1].alpha() > 0
+    window.copy_current_roi_mask()
+    copied = QApplication.clipboard().image()
+    assert copied.pixelColor(20, 30) != copied.pixelColor(55, 30)
+
+    window.distinct_particle_colors.setChecked(False)
+    assert not window.distinct_particle_colors_action.isChecked()
+    assert overlay_colors() == standard
+    window.copy_current_roi_mask()
+    restored = QApplication.clipboard().image()
+    assert restored.pixelColor(20, 30) == restored.pixelColor(55, 30)
     window._set_dirty(False)
 
 
@@ -290,8 +355,6 @@ def test_section_defaults_reset_only_their_parameters(qtbot):
     window.brush_radius.setValue(33)
     window.overview_resolution.setValue(80)
     window.roi_resolution.setValue(40)
-    window.preview_resolution.setCurrentIndex(1)
-    window.selected_roi_only.setChecked(True)
     header_state = (
         window.binary_class.currentData(),
         window.channel.currentData(),
@@ -300,8 +363,6 @@ def test_section_defaults_reset_only_their_parameters(qtbot):
         window.polarity.currentData(),
         window.overview_resolution.value(),
         window.roi_resolution.value(),
-        window.preview_resolution.currentData(),
-        window.selected_roi_only.isChecked(),
     )
 
     window.restore_threshold_defaults()
@@ -352,6 +413,4 @@ def test_section_defaults_reset_only_their_parameters(qtbot):
         window.polarity.currentData(),
         window.overview_resolution.value(),
         window.roi_resolution.value(),
-        window.preview_resolution.currentData(),
-        window.selected_roi_only.isChecked(),
     )

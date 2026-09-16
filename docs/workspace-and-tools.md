@@ -74,6 +74,16 @@ matching result and are normally hidden. **Delete selected** removes selected la
 records. **Copy ROI mask image** places a native-resolution black-and-white crop of the active
 result on the clipboard.
 
+**Colour each particle individually** — in the Layers tab and under **View** (`Shift+C`) —
+repaints every visible instance layer so each label carries its own colour instead of the single
+class colour. Use it to see whether touching particles were segmented as one label or one particle
+was split across several; a merge that should not have happened reads as one colour spanning two
+particles, and an unwanted split reads as two colours inside one. Colours are assigned from the
+label number alone, so they are stable between renders but carry no meaning beyond identity, and
+they are not saved to the project. Toggle it off to return to the standard mask. While it is on,
+**Copy ROI mask image** copies the same per-particle colours instead of a binary mask. It overrides
+a displayed particle grouping's colours until switched off.
+
 ### ROIs
 
 Lists each ROI and its kind. Clicking an Include or Analysis ROI selects it, turns on

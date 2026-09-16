@@ -16,14 +16,13 @@ touching objects. For explanations and examples of each method, see
 | **Threshold method** | Sauvola, Adaptive Gaussian, Otsu, or Manual. | Select the family appropriate to illumination and contrast. Its extra controls appear below. |
 | **Particle polarity** | Whether desired pixels are Dark or Bright relative to background. | Correct polarity is essential for Sauvola, Adaptive Gaussian, and Otsu. Manual uses its numeric band exactly, but polarity still guides rolling-ball correction. |
 | **Overview resolution** | Percent of native width and height shown/used for a fast overview preview and region training. | 25% is a practical large-image start. It changes display/preview detail, not final-run resolution. |
-| **Selected ROI resolution** | Percent of native pixels loaded when displaying or previewing one selected Include/Analysis ROI. | Set 100% to tune a critical ROI at native detail; lower it only when a very large ROI is slow. |
-| **Preview resolution** | `Fast overview` or `Selected ROI at full resolution`. | Use overview for broad behaviour, then native ROI for final tuning. The latter requires exactly one selected Include or Analysis box. |
+| **Selected ROI resolution** | Percent of native pixels loaded when displaying or previewing one selected Include/Analysis ROI, and used by region classification. | Set 100% to tune a critical ROI at native detail; lower it only when a very large ROI is slow. It never changes final-run resolution. |
 | **Eyedropper sets** | Destination for Eyedropper clicks. | Select manual high/low to sample intensity limits or a class-colour target to sample colour. |
-| **Analyze selected ROI/box only** | Limits final analysis to one selected Include/Analysis ROI. | Tick it and select exactly one ROI in the ROIs tab. Exclude ROIs still apply. Result labels are placed back in source coordinates. |
+| **Scope line** | Read-only reminder of the scope implied by the ROIs tab selection. | Select exactly one Include/Analysis ROI to scope both Preview and Run particles to that box; select none (or several) to work over the whole image. Exclude ROIs always apply, and selected-ROI result labels are placed back in source coordinates. |
 | **Show selected ROI** | Loads the selected ROI for display at Selected ROI resolution. | Use before inspecting/tuning fine detail. |
 | **Show overview** | Reloads the whole image at Overview resolution. | Use to return to context or place/select an Analysis box. |
-| **Preview** | Runs a temporary segmentation and shows a mask overlay/summary. | Tune here; `Shift+A` is the shortcut. It never creates a saved layer. |
-| **Run particles — full resolution** | Runs the recipe on original source pixels and creates saved instance/domain layers. | Use only after verifying a preview. It is computationally heavier. |
+| **Preview** | Runs a temporary segmentation and shows a mask overlay/summary at the display resolution for the current scope. | Tune here; `Shift+A` is the shortcut. It never creates a saved layer. |
+| **Run particles — full resolution** | Runs the recipe on original source pixels and creates saved instance/domain layers. | Always uses native resolution regardless of the preview resolution settings. Use only after verifying a preview; it is computationally heavier. |
 | **Cancel** | Requests cancellation of the current background work. | Use if scope/recipe is clearly wrong; wait for controls to re-enable. |
 
 All numeric values have a linked slider and spin box. The slider is for quick exploration; type a

@@ -28,6 +28,12 @@ Select the particle instance layer first. **Mask brush** (`O`) paints foreground
 These edits are undoable/redoable and are saved with the project; they change the result mask, so
 they should be treated as part of the analysis record, not cosmetic markup.
 
+To find the instances that need this, toggle **Colour each particle individually** (Layers tab, or
+**View** → `Shift+C`). Every label takes its own colour, so a merge that should have been two
+particles shows as one colour spanning both, and a particle broken into pieces shows several
+colours inside one outline. Toggle it off to return to the standard single-colour mask; it changes
+display only, never the labels.
+
 Use **Select** to click particle instances. Then:
 
 - **Merge selected** merges two or more selected labels into one instance. Use it when watershed
@@ -69,7 +75,8 @@ Open the **Particle groups** tab with an instance layer selected. The panel incl
 | **Copy group table** | Copies group definitions as tab-separated data. | Paste into a spreadsheet or audit note. |
 | **Open color plots** | Opens size/circularity plots and an area-based estimated-volume-fraction pie view in group colours. | Use **Save plots as PNG + Matplotlib pickle…** in the plot window to save the combined view, three individual graph PNGs, and a reloadable Figure. |
 | **Save grouping overlay image…** | Saves the active grouping over its Analysis-box source crop. | Produces a native-resolution PNG using the same grouping renderer as Export. |
-| **Copy statistics** | Copies active grouping summary as tab-separated data. | Paste values into a review record or spreadsheet. |
+| **Group statistics table** | Per-group count, area, fractions, and distribution summaries, closed by a bold **Total** row. | Click any column header to sort the groups by that column, ascending then descending; the Total row always stays last. Counts, percentages, and areas sum across every displayed row, while means and medians are left blank because they are not additive. |
+| **Copy statistics** | Copies active grouping summary, including the Total row, as tab-separated data. | Paste values into a review record or spreadsheet. |
 | **Save / Delete grouping** | Persists or removes the grouping scheme for the source instance layer. | Save after validation; delete only a scheme, not the segmentation layer. |
 
 Generated adjacent groups do not overlap: their shared upper/lower boundary is assigned once, with

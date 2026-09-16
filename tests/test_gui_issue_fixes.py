@@ -6,6 +6,7 @@ import pytest
 from gst_image_app import mainwindow as mainwindow_module
 from gst_image_app.mainwindow import (
     MainWindow,
+    _analyze_preview,
     _analyze_region_preview,
     _analyze_source,
     _analyze_source_region,
@@ -506,7 +507,6 @@ def test_final_selected_roi_run_dispatches_only_native_roi(qtbot, tmp_path):
     window.manifest.rois.append(roi)
     window._refresh_rois()
     window.rois_list.item(0).setSelected(True)
-    window.selected_roi_only.setChecked(True)
     started = []
     window.thread_pool = SimpleNamespace(start=started.append)
 
@@ -882,3 +882,101 @@ def test_cellpose_dialog_lists_every_analysis_box_it_will_segment(qtbot, tmp_pat
     assert widget.item(0).text().startswith("Large — 21 × 17 px at (10, 8)")
     assert widget.item(1).text().startswith("Small — 5 × 5 px at (2, 2)")
     window._set_dirty(False)
+
+
+def test_analysis_scope_follows_roi_selection_without_a_preview_resolution_control(
+    qtbot, tmp_path
+):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_new_image(_source(tmp_path))
+    roi = _rectangle()
+    window.manifest.rois.append(roi)
+    window._refresh_rois()
+
+    # The redundant controls are gone; scope is implied by the ROI selection.
+    assert not hasattr(window, "preview_resolution")
+    assert not hasattr(window, "selected_roi_only")
+    assert "whole image" in window.analysis_scope_label.text()
+
+    started = []
+    window.thread_pool = SimpleNamespace(start=started.append)
+    window.run_segmentation()
+    assert started[0].function is _analyze_source
+    assert started[0].args[2] == []
+    window.worker = None
+
+    window.rois_list.item(0).setSelected(True)
+    window._roi_selected(window.rois_list.item(0))
+    assert roi.name in window.analysis_scope_label.text()
+
+    started.clear()
+    window.run_segmentation()
+    assert started[0].function is _analyze_source_region
+    assert started[0].args[3] == [roi.id]
+    window.worker = None
+    window._set_dirty(False)
+
+
+def test_preview_scope_and_resolution_follow_the_roi_selection(qtbot, tmp_path):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_new_image(_source(tmp_path))
+    roi = _rectangle()
+    window.manifest.rois.append(roi)
+    window._refresh_rois()
+    window.roi_resolution.setValue(100)
+    started = []
+    window.thread_pool = SimpleNamespace(start=started.append)
+
+    # No selection previews the overview at the overview resolution.
+    window.run_preview_segmentation()
+    assert started[-1].function is _analyze_preview
+    assert started[-1].args[3] == []
+    window.worker = None
+
+    window.rois_list.item(0).setSelected(True)
+    window.run_preview_segmentation()
+    assert started[-1].function is _analyze_region_preview
+    assert started[-1].args[1] == (10, 8, 31, 25)
+    assert started[-1].args[3] == [roi.id]
+    window.worker = None
+    window._set_dirty(False)
+
+
+def test_group_statistics_table_totals_and_sorts_by_column(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    panel = window.grouping_panel
+    panel.set_statistics(
+        {
+            "Coarse": {"count": 3, "count_percent": 30.0, "area_px": 300.0,
+                       "area_fraction": 0.03, "size": {"mean": 9.0, "median": 8.0},
+                       "circularity": {"mean": 0.5}},
+            "Fine": {"count": 7, "count_percent": 70.0, "area_px": 100.0,
+                     "area_fraction": 0.01, "size": {"mean": 2.0, "median": 1.5},
+                     "circularity": {"mean": 0.9}},
+        }
+    )
+    table = panel.statistics_table
+
+    # A bold, non-summable-columns-blank total row closes the table.
+    assert table.rowCount() == 3
+    assert [table.item(2, column).text() for column in range(5)] == [
+        "Total",
+        "10",
+        "100",
+        "400",
+        "4",
+    ]
+    assert [table.item(2, column).text() for column in range(5, 8)] == ["", "", ""]
+    assert table.item(2, 0).font().bold()
+    assert [table.item(row, 0).text() for row in range(2)] == ["Coarse", "Fine"]
+
+    # Numeric columns sort by value, ascending then descending, total stays last.
+    panel._statistics_header_clicked(1)
+    assert [table.item(row, 0).text() for row in range(3)] == ["Coarse", "Fine", "Total"]
+    panel._statistics_header_clicked(1)
+    assert [table.item(row, 0).text() for row in range(3)] == ["Fine", "Coarse", "Total"]
+    panel._statistics_header_clicked(3)
+    assert [table.item(row, 0).text() for row in range(3)] == ["Fine", "Coarse", "Total"]

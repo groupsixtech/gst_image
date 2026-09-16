@@ -46,12 +46,13 @@ region-classification training, result review, grouping, export, and troubleshoo
 2. Draw over the scale bar, enter its known length, and choose mm or µm.
 3. Add inclusion/analysis rectangles or polygons and exclusion regions as needed.
 4. Preview and run the particle recipe. Overview and selected-ROI resolutions are controlled
-   independently from 0-100%; 100% uses native pixels. Use **Fast overview** for whole-image
-   tuning, or select one Include/Analysis box and choose **Selected ROI** to limit memory. The
-   **Run particles — full resolution** action always uses original-resolution pixels. With
-   **Analyze selected ROI/box only** enabled, it loads and processes only the selected native
-   ROI crop; otherwise it processes the complete source image. ROI results are positioned back
-   into full-source coordinates for overlays and export. Press `Shift+A` to run the same
+   independently from 0-100%; 100% uses native pixels, and both affect display and preview only.
+   The ROIs tab selection implies the scope: select exactly one Include/Analysis box to preview
+   and analyze that box alone, or leave the list unselected to work over the whole image. The
+   **Run particles — full resolution** action always uses original-resolution pixels; scoped to a
+   box it loads and processes only that native ROI crop, otherwise it processes the complete
+   source image. ROI results are positioned back into full-source coordinates for overlays and
+   export. Press `Shift+A` to run the same
    **Preview** action from the keyboard. The **Segmentation class** and **Assisted region
    classes** selections stay linked, and the saved particle layer is assigned to that class.
    Use the eyedropper to set either endpoint of a manual threshold range or a
@@ -63,7 +64,9 @@ region-classification training, result review, grouping, export, and troubleshoo
    the active brush footprint. Hold the middle mouse button and drag to pan temporarily without
    changing the active tool. In the Layers tab, **Copy ROI mask image** copies the active
    result as a native-resolution black-and-white ROI crop suitable for pasting into another
-   application.
+   application. Toggle **Colour each particle individually** (Layers tab or **View**, `Shift+C`)
+   to give every label its own colour while judging which particles need splitting or joining,
+   and toggle it off for the standard mask.
 6. Open **Particle groups** with an instance layer selected to filter and partition measured
    particles by equivalent radius, equivalent diameter, area, circularity, or a combination.
    The dual-handle range bars update the image, particle table, plots, and per-group statistics

@@ -70,7 +70,15 @@ Grouping is post-analysis and non-destructive. Group intervals are validated to
 avoid overlap; adjacent generated intervals use exclusive upper bounds except
 the outermost final bound. Group statistics report counts, area/fraction, border
 counts, and size/circularity distributions. Keep grouping tied to its source
-instance layer, never only a global particle list.
+instance layer, never only a global particle list. The GUI statistics table sorts
+itself (`ParticleGroupingPanel._render_statistics`) rather than using Qt's
+built-in sorting, so its additive Total row can always stay last.
+
+GUI analysis scope is implied by the ROIs-list selection, not a separate
+checkbox: exactly one selected Include/Analysis ROI scopes both preview and the
+final run to that box. Overview/Selected-ROI resolution percentages affect
+display, preview, and region-classification feature extraction only; the final
+particle run always reads original-resolution pixels.
 
 ## Libraries and their intended roles
 

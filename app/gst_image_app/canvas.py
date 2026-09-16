@@ -37,6 +37,44 @@ def _qimage_bgr(image: np.ndarray) -> QImage:
     ).copy()
 
 
+# A golden-angle walk around the hue circle: segmentation numbers touching
+# particles consecutively, so consecutive labels must land far apart in colour.
+_HUE_STEP = 0.6180339887498949
+
+
+def distinct_label_colors(count: int) -> np.ndarray:
+    """Build an RGB table giving every label from 1 to ``count`` its own colour."""
+    labels = np.arange(max(0, int(count)) + 1)
+    hsv = np.empty((1, labels.size, 3), dtype=np.uint8)
+    hsv[0, :, 0] = np.rint(labels * _HUE_STEP % 1.0 * 180).astype(np.int64) % 180
+    # Cycle saturation and value on different periods, so the labels that do land
+    # on a shared hue still separate.
+    hsv[0, :, 1] = 165 + labels % 3 * 45
+    hsv[0, :, 2] = 255 - labels % 5 * 20
+    colors = cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB)[0]
+    colors[0] = 0
+    return colors
+
+
+def _label_lookup(
+    colors: dict[int, tuple[int, int, int]] | np.ndarray, maximum: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """Build the colour and presence tables that a label layer indexes by value."""
+    lookup = np.zeros((maximum + 1, 3), dtype=np.uint8)
+    present = np.zeros(maximum + 1, dtype=bool)
+    if isinstance(colors, np.ndarray):
+        usable = min(maximum + 1, colors.shape[0])
+        lookup[:usable] = colors[:usable]
+        present[:usable] = True
+        present[0] = False
+        return lookup, present
+    for label, color in colors.items():
+        if 0 <= label <= maximum:
+            lookup[label] = color
+            present[label] = True
+    return lookup, present
+
+
 class ImageCanvas(QGraphicsView):
     line_finished = Signal(str, object, object)
     rectangle_finished = Signal(str, object, object)
@@ -272,12 +310,16 @@ class ImageCanvas(QGraphicsView):
         layers: list[
             tuple[
                 np.ndarray,
-                tuple[int, int, int] | dict[int, tuple[int, int, int]],
+                tuple[int, int, int] | dict[int, tuple[int, int, int]] | np.ndarray,
                 float,
             ]
         ],
     ) -> None:
-        """Composite visible binary/instance and multi-class layers in preview space."""
+        """Composite visible binary/instance and multi-class layers in preview space.
+
+        A layer's colour is one RGB triple for the whole layer, a mapping from label
+        value to RGB, or an RGB lookup table indexed by label value.
+        """
         if self._base_item is None:
             return
         if self._overlay_item is not None:
@@ -300,12 +342,7 @@ class ImageCanvas(QGraphicsView):
                 selections = [((small > 0), colors)]
             else:
                 maximum = max(0, int(small.max()))
-                lookup = np.zeros((maximum + 1, 3), dtype=np.uint8)
-                present = np.zeros(maximum + 1, dtype=bool)
-                for label, color in colors.items():
-                    if 0 <= label <= maximum:
-                        lookup[label] = color
-                        present[label] = True
+                lookup, present = _label_lookup(colors, maximum)
                 safe = np.clip(small, 0, maximum)
                 selected = (small >= 0) & (small <= maximum) & present[safe]
                 selections = [(selected, lookup[safe])]
