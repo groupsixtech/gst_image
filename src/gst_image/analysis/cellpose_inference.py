@@ -82,9 +82,11 @@ def run_cellpose_inference(
     )
     if domain.shape != (height, width) or not np.any(domain):
         raise ValueError("Analysis mask must match the image and contain at least one pixel")
+    if recipe.device == "gpu":
+        _require_cuda_gpu()
     top, left, bottom, right = _domain_bounds(domain)
     _report(progress, 0.03, "Preparing Cellpose-SAM input")
-    active_model, cache_path = _get_model(allow_model_download, model)
+    active_model, cache_path = _get_model(allow_model_download, model, use_gpu=recipe.device == "gpu")
     crop = source[top:bottom, left:right, :3]
     _check_cancelled(cancelled)
     _report(progress, 0.1, "Running local Cellpose-SAM v2")
@@ -113,6 +115,7 @@ def run_cellpose_inference(
     summary: dict[str, float | int | str] = {
         "model_id": STOCK_MODEL_ID,
         "modality": recipe.modality,
+        "device": recipe.device,
         "analyzed_pixels": analyzed_pixels,
         "analysis_resolution": "original",
         "particle_count": len(particles),
@@ -145,7 +148,7 @@ def _cellpose_models() -> Any:
 
 
 def _get_model(
-    allow_model_download: bool, model: CellposeModel | None
+    allow_model_download: bool, model: CellposeModel | None, *, use_gpu: bool
 ) -> tuple[CellposeModel, Path]:
     if model is not None:
         path = _resolved_model_path(model, Path("not-recorded"))
@@ -158,7 +161,7 @@ def _get_model(
             "download; no image data will be uploaded."
         )
     try:
-        return models.CellposeModel(pretrained_model=STOCK_MODEL_ID, gpu=False), cache_path
+        return models.CellposeModel(pretrained_model=STOCK_MODEL_ID, gpu=use_gpu), cache_path
     except Exception as error:
         if not cache_path.is_file():
             raise RuntimeError(f"Unable to obtain local Cellpose-SAM v2 weights: {error}") from error
@@ -222,6 +225,20 @@ def _torch_version() -> str:
     except ImportError:
         return "not-installed"
     return str(torch.__version__)
+
+
+def _require_cuda_gpu() -> None:
+    try:
+        import torch
+    except ImportError as error:
+        raise RuntimeError(
+            "GPU Cellpose requires a CUDA-enabled PyTorch installation; install it before gst-image[cellpose]"
+        ) from error
+    if not torch.cuda.is_available():
+        raise RuntimeError(
+            "No CUDA GPU is available to PyTorch. Install the CUDA wheel matching the NVIDIA driver, "
+            "then verify torch.cuda.is_available() is True."
+        )
 
 
 def _report(progress: Progress | None, value: float, message: str) -> None:

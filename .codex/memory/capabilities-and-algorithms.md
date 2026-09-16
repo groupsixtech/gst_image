@@ -87,7 +87,7 @@ instance layer, never only a global particle list.
 | pandas | CSV exports and aggregate tables. |
 | PySide6 | Desktop widgets, graphics canvas, workers, undo commands. |
 | matplotlib | GUI plots for particle distributions/group summaries. |
-| Cellpose (optional) | Local CPU Cellpose-SAM v2 labelled-instance inference; stock weights are explicitly downloaded to Cellpose's cache and require a CC-BY-NC acknowledgement. |
+| Cellpose (optional) | Local Cellpose-SAM v2 labelled-instance inference on CPU or a CUDA-capable NVIDIA GPU; stock weights are explicitly downloaded to Cellpose's cache and require a CC-BY-NC acknowledgement. |
 
 ## Evaluation and exports
 

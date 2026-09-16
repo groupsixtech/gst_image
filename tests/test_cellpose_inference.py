@@ -89,6 +89,25 @@ def test_cellpose_requires_acknowledgement_and_discards_late_cancelled_result(tm
         )
 
 
+def test_cellpose_gpu_recipe_checks_cuda_before_running_model(tmp_path, monkeypatch):
+    weights = tmp_path / "cpsam_v2"
+    weights.write_bytes(b"weights")
+    calls = []
+    monkeypatch.setattr(
+        "gst_image.analysis.cellpose_inference._require_cuda_gpu", lambda: calls.append("checked")
+    )
+    recipe = CellposeInferenceRecipe(device="gpu", noncommercial_license_accepted=True)
+    result = run_cellpose_inference(
+        np.zeros((4, 4, 3), dtype=np.uint8),
+        None,
+        recipe,
+        model=_CellposeModel(weights, np.ones((4, 4), dtype=np.int32)),
+    )
+
+    assert calls == ["checked"]
+    assert result.summary["device"] == "gpu"
+
+
 def test_cellpose_provenance_roundtrips_and_project_validation_checks_owned_layers(tmp_path):
     recipe = CellposeInferenceRecipe(noncommercial_license_accepted=True)
     layer = SegmentationLayer(name="Cells", kind="instances", review_status="pending")
@@ -144,6 +163,8 @@ def test_cellpose_cli_requires_explicit_licence_flag_and_builds_recipe(monkeypat
             str(tmp_path / "cells.gstproj"),
             "--modality",
             "metallography",
+            "--device",
+            "gpu",
             "--accept-cellpose-noncommercial-license",
             "--allow-model-download",
             "--diameter",
@@ -153,6 +174,7 @@ def test_cellpose_cli_requires_explicit_licence_flag_and_builds_recipe(monkeypat
 
     assert args.handler(args) == 0
     assert captured["recipe"].modality == "metallography"
+    assert captured["recipe"].device == "gpu"
     assert captured["recipe"].diameter_px == 42
     assert captured["recipe"].noncommercial_license_accepted
     assert captured["kwargs"]["allow_model_download"]

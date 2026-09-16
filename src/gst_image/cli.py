@@ -404,6 +404,7 @@ def _cmd_infer_cellpose(args: argparse.Namespace) -> int:
         )
     recipe = CellposeInferenceRecipe(
         modality=args.modality,
+        device=args.device,
         diameter_px=args.diameter,
         cellprob_threshold=args.cellprob_threshold,
         flow_threshold=args.flow_threshold,
@@ -475,6 +476,7 @@ def build_parser() -> argparse.ArgumentParser:
     infer_cellpose.add_argument("input")
     infer_cellpose.add_argument("--output", required=True)
     infer_cellpose.add_argument("--modality", choices=("biological", "metallography"), default="biological")
+    infer_cellpose.add_argument("--device", choices=("cpu", "gpu"), default="cpu")
     infer_cellpose.add_argument("--mm-per-pixel", type=float)
     infer_cellpose.add_argument("--diameter", type=float)
     infer_cellpose.add_argument("--cellprob-threshold", type=float, default=0.0)

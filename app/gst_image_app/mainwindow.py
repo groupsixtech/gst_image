@@ -2017,6 +2017,13 @@ class MainWindow(QMainWindow):
         modality.addItem("Biological cells", "biological")
         modality.addItem("Metallography particles (experimental)", "metallography")
         form.addRow("Result type", modality)
+        device = QComboBox()
+        device.addItem("CPU (default)", "cpu")
+        device.addItem("NVIDIA CUDA GPU", "gpu")
+        device.setToolTip(
+            "Requires a CUDA-enabled PyTorch installation and an NVIDIA GPU visible to PyTorch."
+        )
+        form.addRow("Execution device", device)
         diameter = QDoubleSpinBox()
         diameter.setRange(0, 100_000)
         diameter.setDecimals(1)
@@ -2068,6 +2075,7 @@ class MainWindow(QMainWindow):
         return (
             CellposeInferenceRecipe(
                 modality=modality.currentData(),
+                device=device.currentData(),
                 diameter_px=diameter.value() or None,
                 cellprob_threshold=cellprob.value(),
                 flow_threshold=flow.value(),

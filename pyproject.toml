@@ -29,6 +29,11 @@ ml = [
 cellpose = [
     "cellpose>=4.2,<5",
 ]
+# Install a CUDA-enabled torch wheel first; package metadata cannot select the
+# correct CUDA build for an individual workstation.
+cellpose-gpu = [
+    "cellpose>=4.2,<5",
+]
 dev = [
     "pytest>=8.3",
     "pytest-cov>=5",

@@ -277,6 +277,7 @@ class CellposeInferenceRecipe(BaseModel):
     name: str = "Cellpose-SAM v2 inference"
     model_id: Literal["cpsam_v2"] = "cpsam_v2"
     modality: Literal["biological", "metallography"] = "biological"
+    device: Literal["cpu", "gpu"] = "cpu"
     diameter_px: float | None = Field(default=None, gt=0)
     cellprob_threshold: float = Field(default=0.0, ge=-10, le=10)
     flow_threshold: float = Field(default=0.4, gt=0, le=10)
