@@ -378,6 +378,7 @@ def infer_cellpose_image(
         layer_ids=[instance_layer.id, domain_layer.id],
         summary=result.summary,
         source_bounds_px=result.source_bounds_px,
+        region_bounds_px=result.region_bounds_px,
         cellpose_version=result.cellpose_version,
         torch_version=result.torch_version,
         model_sha256=result.model_sha256,

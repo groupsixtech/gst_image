@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import cv2
 import numpy as np
+import pytest
 from gst_image_app import mainwindow as mainwindow_module
 from gst_image_app.mainwindow import (
     MainWindow,
@@ -755,4 +756,129 @@ def test_selecting_roi_switches_its_particle_layer_and_saved_scheme(qtbot, tmp_p
     assert window.current_layer_id == first_layer.id
     assert window.grouping_panel.scheme_combo.currentData() == first_scheme.id
     assert window.grouping_preview_definition.id == first_scheme.id
+    window._set_dirty(False)
+
+
+def test_cellpose_worker_runs_each_analysis_box_and_skips_the_rest_of_the_overview(
+    tmp_path, monkeypatch
+):
+    path = _source(tmp_path, shape=(40, 60))
+    first = _rectangle(name="Box A")
+    second = ROI(
+        name="Box B",
+        kind=ROIKind.ANALYSIS_BOX,
+        shape="rectangle",
+        points=[Point(x=40, y=4), Point(x=54, y=18)],
+    )
+    include = _rectangle(name="Include", kind=ROIKind.INCLUDE)
+    captured = {}
+
+    def fake_inference(source, domain, recipe, calibration, **kwargs):
+        captured.update(domain=domain, regions=kwargs["regions"])
+        return SimpleNamespace(
+            labels=np.zeros(domain.shape, dtype=np.int32),
+            particles=[],
+            summary={},
+            source_bounds_px=(0, 0, 1, 1),
+            region_bounds_px=list(kwargs["regions"]),
+            cellpose_version="x",
+            torch_version="x",
+            model_sha256="x",
+            model_cache_path="x",
+        )
+
+    monkeypatch.setattr(mainwindow_module, "run_cellpose_inference", fake_inference)
+    recipe = SimpleNamespace(modality="biological", device="cpu")
+
+    mainwindow_module._analyze_cellpose_source(
+        path,
+        [first, second, include],
+        [],
+        recipe,
+        None,
+        False,
+        progress=lambda value, message: None,
+        cancelled=lambda: False,
+    )
+
+    # Both Analysis boxes are analysed; the Include ROI does not widen the scope.
+    assert captured["regions"] == [(10, 8, 31, 25), (40, 4, 55, 19)]
+    assert not captured["domain"][0, 0]
+    assert captured["domain"][8, 10] and captured["domain"][4, 40]
+
+
+def test_cellpose_worker_refuses_to_run_without_an_analysis_box(tmp_path):
+    path = _source(tmp_path)
+    with pytest.raises(ValueError, match="Analysis box"):
+        mainwindow_module._analyze_cellpose_source(
+            path,
+            [_rectangle(name="Include", kind=ROIKind.INCLUDE)],
+            [],
+            SimpleNamespace(modality="biological", device="cpu"),
+            None,
+            False,
+            progress=lambda value, message: None,
+            cancelled=lambda: False,
+        )
+
+
+def _auto_accept_dialogs(monkeypatch):
+    """Accept modal dialogs without an event loop by swapping the class the GUI builds."""
+
+    class _Accepted(mainwindow_module.QDialog):
+        def exec(self):
+            return mainwindow_module.QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(mainwindow_module, "QDialog", _Accepted)
+
+
+def test_cellpose_dialog_defaults_to_gpu_and_needs_no_licence_or_download_ticks(
+    qtbot, tmp_path, monkeypatch
+):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_new_image(_source(tmp_path))
+    monkeypatch.setattr(mainwindow_module, "_cuda_is_available", lambda: True)
+    _auto_accept_dialogs(monkeypatch)
+
+    recipe = window._cellpose_recipe_dialog([_rectangle()])
+
+    # Both former checkboxes are gone; the run is licensed and may fetch weights.
+    assert recipe.device == "gpu"
+    assert recipe.noncommercial_license_accepted
+    assert recipe.diameter_px == 46
+    assert (recipe.flow_threshold, recipe.cellprob_threshold) == (0.4, 0.0)
+    window._set_dirty(False)
+
+
+def test_cellpose_dialog_falls_back_to_cpu_without_a_visible_cuda_device(
+    qtbot, tmp_path, monkeypatch
+):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_new_image(_source(tmp_path))
+    monkeypatch.setattr(mainwindow_module, "_cuda_is_available", lambda: False)
+    _auto_accept_dialogs(monkeypatch)
+
+    assert window._cellpose_recipe_dialog([_rectangle()]).device == "cpu"
+    window._set_dirty(False)
+
+
+def test_cellpose_dialog_lists_every_analysis_box_it_will_segment(qtbot, tmp_path):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_new_image(_source(tmp_path, shape=(40, 60)))
+    small = ROI(
+        name="Small",
+        kind=ROIKind.ANALYSIS_BOX,
+        shape="rectangle",
+        points=[Point(x=2, y=2), Point(x=6, y=6)],
+    )
+
+    widget = window._cellpose_scope_list([small, _rectangle(name="Large")])
+
+    # Largest box first, each with its own pixel bounds.
+    assert widget.count() == 2
+    assert widget.item(0).text().startswith("Large — 21 × 17 px at (10, 8)")
+    assert widget.item(1).text().startswith("Small — 5 × 5 px at (2, 2)")
     window._set_dirty(False)

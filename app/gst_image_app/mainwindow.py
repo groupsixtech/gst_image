@@ -163,26 +163,68 @@ def _analyze_cellpose_source(
     progress,
     cancelled,
 ):
-    """Run local Cellpose in the standard worker path at source resolution."""
+    """Run local Cellpose at source resolution inside the Analysis boxes only."""
     source = load_image(path, color=True)
     gray = cv2.cvtColor(source, cv2.COLOR_BGR2GRAY)
     progress(0.01, "Building Cellpose analysis domain")
+    boxes = _cellpose_analysis_boxes(rois, include_ids)
+    if not boxes:
+        raise ValueError(
+            "Cellpose runs inside Analysis boxes only. Draw at least one Analysis box on the "
+            "overview before running Cellpose-SAM."
+        )
+    scoped = boxes + [roi for roi in rois if roi.kind == ROIKind.EXCLUDE]
     domain = build_analysis_mask(
         gray.shape,
-        rois,
+        scoped,
         suggest_specimen_mask(gray),
-        set(include_ids),
+        {roi.id for roi in boxes},
     )
     result = run_cellpose_inference(
         source,
         domain,
         recipe,
         calibration,
+        regions=[roi_bounds(gray.shape, roi) for roi in boxes],
         allow_model_download=allow_model_download,
         progress=progress,
         cancelled=cancelled,
     )
     return gray, domain, result, recipe
+
+
+def _cellpose_analysis_boxes(rois, include_ids) -> list[ROI]:
+    """Cellpose is scoped to Analysis boxes, narrowed further by an explicit selection."""
+    wanted = set(include_ids or ())
+    return [
+        roi
+        for roi in rois
+        if roi.kind == ROIKind.ANALYSIS_BOX and (not wanted or roi.id in wanted)
+    ]
+
+
+def _cuda_is_available() -> bool:
+    """Report CUDA readiness without making Torch a hard requirement of the GUI."""
+    try:
+        import torch
+    except ImportError:
+        return False
+    try:
+        return bool(torch.cuda.is_available())
+    except Exception:
+        return False
+
+
+def roi_bounds(shape: tuple[int, int], roi: ROI) -> tuple[int, int, int, int]:
+    """Clamp an ROI's pixel bounding box to the image as (left, top, right, bottom)."""
+    height, width = shape
+    xs = [point.x for point in roi.points]
+    ys = [point.y for point in roi.points]
+    left = min(width - 1, max(0, int(np.floor(min(xs)))))
+    top = min(height - 1, max(0, int(np.floor(min(ys)))))
+    right = min(width, int(np.ceil(max(xs))) + 1)
+    bottom = min(height, int(np.ceil(max(ys))) + 1)
+    return left, top, max(left + 1, right), max(top + 1, bottom)
 
 
 def _analyze_source_region(
@@ -1501,13 +1543,7 @@ class MainWindow(QMainWindow):
         return roi if roi is not None and roi.kind == ROIKind.ANALYSIS_BOX else None
 
     def _roi_bounds(self, roi: ROI) -> tuple[int, int, int, int]:
-        xs = [point.x for point in roi.points]
-        ys = [point.y for point in roi.points]
-        left = min(self.manifest.image_width - 1, max(0, int(np.floor(min(xs)))))
-        top = min(self.manifest.image_height - 1, max(0, int(np.floor(min(ys)))))
-        right = min(self.manifest.image_width, int(np.ceil(max(xs))) + 1)
-        bottom = min(self.manifest.image_height, int(np.ceil(max(ys))) + 1)
-        return left, top, max(left + 1, right), max(top + 1, bottom)
+        return roi_bounds((self.manifest.image_height, self.manifest.image_width), roi)
 
     def _set_canvas_image(
         self,
@@ -2002,33 +2038,52 @@ class MainWindow(QMainWindow):
         )
         self.thread_pool.start(self.worker)
 
-    def _cellpose_recipe_dialog(self) -> tuple[CellposeInferenceRecipe, bool] | None:
+    def _cellpose_recipe_dialog(self, targets: list[ROI]) -> CellposeInferenceRecipe | None:
         dialog = QDialog(self)
         dialog.setWindowTitle("Run local Cellpose-SAM v2")
         layout = QVBoxLayout(dialog)
-        layout.addWidget(
-            QLabel(
-                "Cellpose-SAM v2 runs locally. If the stock weights are missing, checking the "
-                "download option permits a one-time download; source images are never uploaded."
-            )
+        intro = QLabel(
+            "Cellpose-SAM v2 runs locally and never uploads a source image. Missing stock "
+            "weights are downloaded once. The stock weights are CC-BY-NC: running this "
+            "records a non-commercial acknowledgement in the project."
         )
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+        scope = QLabel(
+            f"Scope — {len(targets)} Analysis box{'es' if len(targets) != 1 else ''} at native "
+            "resolution. The rest of the overview is never sent to the model."
+        )
+        scope.setWordWrap(True)
+        layout.addWidget(scope)
+        layout.addWidget(self._cellpose_scope_list(targets))
         form = QFormLayout()
         modality = QComboBox()
         modality.addItem("Biological cells", "biological")
         modality.addItem("Metallography particles (experimental)", "metallography")
         form.addRow("Result type", modality)
         device = QComboBox()
-        device.addItem("CPU (default)", "cpu")
         device.addItem("NVIDIA CUDA GPU", "gpu")
+        device.addItem("CPU", "cpu")
+        cuda_ready = _cuda_is_available()
+        device.setCurrentIndex(0 if cuda_ready else 1)
         device.setToolTip(
             "Requires a CUDA-enabled PyTorch installation and an NVIDIA GPU visible to PyTorch."
+            if cuda_ready
+            else "PyTorch cannot see a CUDA device on this machine, so CPU is preselected."
         )
         form.addRow("Execution device", device)
         diameter = QDoubleSpinBox()
         diameter.setRange(0, 100_000)
         diameter.setDecimals(1)
-        diameter.setSpecialValueText("Auto")
-        diameter.setValue(0)
+        diameter.setSpecialValueText("Cellpose default (30 px)")
+        # Native-resolution Analysis boxes on stitched metallographs run ~46 px particles.
+        diameter.setValue(46)
+        diameter.setToolTip(
+            "Typical particle diameter in source pixels. Cellpose-SAM rescales the region by "
+            "30 / diameter, so the default treats particles as ~30 px and under-segments larger "
+            "ones. If a downscaled export segments better in the Cellpose app, set this to 30 "
+            "divided by that export's scale."
+        )
         form.addRow("Diameter (px)", diameter)
         cellprob = QDoubleSpinBox()
         cellprob.setRange(-10, 10)
@@ -2051,12 +2106,6 @@ class MainWindow(QMainWindow):
         overlap.setValue(0.1)
         form.addRow("Tile overlap", overlap)
         layout.addLayout(form)
-        allow_download = QCheckBox("Allow one-time download if local cpsam_v2 weights are absent")
-        layout.addWidget(allow_download)
-        acknowledge = QCheckBox(
-            "I acknowledge that stock Cellpose-SAM v2 weights are CC-BY-NC and this run is non-commercial."
-        )
-        layout.addWidget(acknowledge)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Ok
         )
@@ -2065,29 +2114,42 @@ class MainWindow(QMainWindow):
         layout.addWidget(buttons)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return None
-        if not acknowledge.isChecked():
-            QMessageBox.warning(
-                self,
-                "Cellpose licence acknowledgement",
-                "Acknowledge the non-commercial Cellpose-SAM v2 licence before running it.",
-            )
-            return None
-        return (
-            CellposeInferenceRecipe(
-                modality=modality.currentData(),
-                device=device.currentData(),
-                diameter_px=diameter.value() or None,
-                cellprob_threshold=cellprob.value(),
-                flow_threshold=flow.value(),
-                min_size_px=min_size.value(),
-                tile_overlap=overlap.value(),
-                noncommercial_license_accepted=True,
-            ),
-            allow_download.isChecked(),
+        return CellposeInferenceRecipe(
+            modality=modality.currentData(),
+            device=device.currentData(),
+            diameter_px=diameter.value() or None,
+            cellprob_threshold=cellprob.value(),
+            flow_threshold=flow.value(),
+            min_size_px=min_size.value(),
+            tile_overlap=overlap.value(),
+            noncommercial_license_accepted=True,
         )
 
+    def _cellpose_scope_list(self, targets: list[ROI]) -> QListWidget:
+        """Show exactly which Analysis boxes this run will segment, largest first."""
+        widget = QListWidget()
+        widget.setSelectionMode(QListWidget.SelectionMode.NoSelection)
+        widget.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        rows = []
+        for roi in targets:
+            left, top, right, bottom = self._roi_bounds(roi)
+            rows.append(((right - left) * (bottom - top), roi.name, left, top, right, bottom))
+        for pixels, name, left, top, right, bottom in sorted(rows, reverse=True):
+            item = QListWidgetItem(
+                f"{name} — {right - left} × {bottom - top} px at ({left}, {top}), "
+                f"{pixels / 1e6:.2f} Mpx"
+            )
+            item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            widget.addItem(item)
+        # Fit up to five rows at the theme's own row height, then scroll.
+        row_height = widget.sizeHintForRow(0) if rows else 0
+        widget.setFixedHeight(
+            row_height * min(len(rows), 5) + 2 * widget.frameWidth() + 2
+        )
+        return widget
+
     def run_cellpose_inference_dialog(self) -> None:
-        """Run stock Cellpose-SAM v2 in a cancellable worker after explicit acknowledgement."""
+        """Run stock Cellpose-SAM v2 over the project's Analysis boxes in a cancellable worker."""
         if self.current_path is None or self.manifest is None or self.worker is not None:
             return
         if not self.current_path.exists() or sha256_file(self.current_path) != self.manifest.source_sha256:
@@ -2097,21 +2159,31 @@ class MainWindow(QMainWindow):
                 "Relink the unchanged source as a new revision before running Cellpose inference.",
             )
             return
-        settings = self._cellpose_recipe_dialog()
-        if settings is None:
+        available = _cellpose_analysis_boxes(self.manifest.rois, ())
+        if not available:
+            QMessageBox.information(
+                self,
+                "Analysis box required",
+                "Cellpose-SAM runs inside Analysis boxes only, never over the whole overview. "
+                "Draw at least one Analysis box before running it.",
+            )
             return
-        recipe, allow_model_download = settings
         scope_ids: list[str] = []
+        targets = available
         if self.selected_roi_only.isChecked():
-            selected = self._selected_full_resolution_roi()
+            selected = self._selected_analysis_box()
             if selected is None:
                 QMessageBox.information(
                     self,
                     "Selected-ROI analysis",
-                    "Select exactly one Include or Analysis box before running Cellpose.",
+                    "Select exactly one Analysis box before running Cellpose.",
                 )
                 return
             scope_ids = [selected.id]
+            targets = [selected]
+        recipe = self._cellpose_recipe_dialog(targets)
+        if recipe is None:
+            return
         self.run_scope_ids = scope_ids
         self.worker = FunctionWorker(
             _analyze_cellpose_source,
@@ -2120,7 +2192,7 @@ class MainWindow(QMainWindow):
             scope_ids,
             recipe,
             self.manifest.calibration,
-            allow_model_download,
+            True,  # stock weights download once on demand; no per-run confirmation
             with_callbacks=True,
         )
         self.worker.signals.progress.connect(self._progress)
@@ -2132,7 +2204,11 @@ class MainWindow(QMainWindow):
         self.run_model_button.setEnabled(False)
         self.run_cellpose_button.setEnabled(False)
         self.cancel_button.setEnabled(True)
-        self.preview_status.setText("Running local Cellpose-SAM v2 at original source resolution")
+        boxes = len(targets)
+        self.preview_status.setText(
+            f"Running local Cellpose-SAM v2 on {boxes} Analysis box{'es' if boxes != 1 else ''} "
+            "at original source resolution"
+        )
         self.thread_pool.start(self.worker)
 
     def _cellpose_inference_result(self, payload) -> None:
@@ -2158,6 +2234,7 @@ class MainWindow(QMainWindow):
             layer_ids=[instance_layer.id, domain_layer.id],
             summary=result.summary,
             source_bounds_px=result.source_bounds_px,
+            region_bounds_px=result.region_bounds_px,
             cellpose_version=result.cellpose_version,
             torch_version=result.torch_version,
             model_sha256=result.model_sha256,

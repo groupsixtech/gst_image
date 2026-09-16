@@ -295,6 +295,7 @@ class CellposeInferenceRun(BaseModel):
     layer_ids: list[str] = Field(default_factory=list)
     summary: dict[str, Any] = Field(default_factory=dict)
     source_bounds_px: tuple[int, int, int, int] | None = None
+    region_bounds_px: list[tuple[int, int, int, int]] = Field(default_factory=list)
     cellpose_version: str = "not-recorded"
     torch_version: str = "not-recorded"
     model_sha256: str = "not-recorded"
