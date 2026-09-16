@@ -133,5 +133,5 @@ def test_model_inference_provenance_roundtrips(tmp_path):
     )
     project = save_project(tmp_path / "model.gstproj", manifest)
     loaded, _ = load_project(project)
-    assert loaded.schema_version == 4
+    assert loaded.schema_version == 5
     assert loaded.model_inference_runs[0].recipe.model_sha256 == pack.model_sha256

@@ -24,6 +24,7 @@ def test_main_window_constructs(qtbot):
     assert "GST Image" in window.windowTitle()
     assert window.preview_button.text() == "Preview"
     assert window.run_button.text() == "Run particles — full resolution"
+    assert window.run_cellpose_button.text() == "Run Cellpose-SAM v2…"
     assert window.window_size_slider.value() == window.window_size.value()
 
 

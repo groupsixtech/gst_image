@@ -12,7 +12,7 @@ from typing import Any, Literal
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-PROJECT_SCHEMA_VERSION = 4
+PROJECT_SCHEMA_VERSION = 5
 
 
 def _id() -> str:
@@ -265,6 +265,42 @@ class ModelInferenceRun(BaseModel):
     summary: dict[str, Any] = Field(default_factory=dict)
     source_bounds_px: tuple[int, int, int, int] | None = None
     runtime_version: str = "not-recorded"
+    review_status: Literal["pending", "confirmed"] = "pending"
+    reviewed_at: datetime | None = None
+    reviewer: str | None = None
+
+
+class CellposeInferenceRecipe(BaseModel):
+    """Reproducible settings for the locally cached stock Cellpose-SAM model."""
+
+    id: str = Field(default_factory=_id)
+    name: str = "Cellpose-SAM v2 inference"
+    model_id: Literal["cpsam_v2"] = "cpsam_v2"
+    modality: Literal["biological", "metallography"] = "biological"
+    diameter_px: float | None = Field(default=None, gt=0)
+    cellprob_threshold: float = Field(default=0.0, ge=-10, le=10)
+    flow_threshold: float = Field(default=0.4, gt=0, le=10)
+    min_size_px: int = Field(default=15, ge=0)
+    tile_overlap: float = Field(default=0.1, ge=0, lt=1)
+    noncommercial_license_accepted: bool = False
+
+
+class CellposeInferenceRun(BaseModel):
+    """Immutable provenance for a locally run Cellpose-SAM result."""
+
+    id: str = Field(default_factory=_id)
+    created_at: datetime = Field(default_factory=_now)
+    recipe: CellposeInferenceRecipe
+    layer_ids: list[str] = Field(default_factory=list)
+    summary: dict[str, Any] = Field(default_factory=dict)
+    source_bounds_px: tuple[int, int, int, int] | None = None
+    cellpose_version: str = "not-recorded"
+    torch_version: str = "not-recorded"
+    model_sha256: str = "not-recorded"
+    model_cache_path: str = "not-recorded"
+    license_name: str = "CC-BY-NC"
+    attribution: str = "Cellpose-SAM; Pachitariu, Rariden, and Stringer (2025)"
+    license_acknowledged_at: datetime | None = None
     review_status: Literal["pending", "confirmed"] = "pending"
     reviewed_at: datetime | None = None
     reviewer: str | None = None
@@ -533,6 +569,7 @@ class ProjectManifest(BaseModel):
     recipes: list[SegmentationRecipe] = Field(default_factory=list)
     region_recipes: list[RegionClassifierRecipe] = Field(default_factory=list)
     model_inference_recipes: list[ModelInferenceRecipe] = Field(default_factory=list)
+    cellpose_inference_recipes: list[CellposeInferenceRecipe] = Field(default_factory=list)
     layers: list[SegmentationLayer] = Field(default_factory=list)
     measurements: list[Measurement] = Field(default_factory=list)
     # Retained for loading/API compatibility. New GUI work is stored as layer-scoped schemes.
@@ -541,6 +578,7 @@ class ProjectManifest(BaseModel):
     active_particle_groupings: dict[str, str] = Field(default_factory=dict)
     runs: list[AnalysisRun] = Field(default_factory=list)
     model_inference_runs: list[ModelInferenceRun] = Field(default_factory=list)
+    cellpose_inference_runs: list[CellposeInferenceRun] = Field(default_factory=list)
     edits: list[EditEvent] = Field(default_factory=list)
     training_strokes: list[TrainingStroke] = Field(default_factory=list)
     particle_records: dict[str, list[ParticleRecord]] = Field(default_factory=dict)

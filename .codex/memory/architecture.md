@@ -76,14 +76,15 @@ A `.gstproj` is a directory. `project.json` is the Pydantic `ProjectManifest`;
 is a reduced source preview; `results/` can hold exported analysis. Portable
 projects also copy the source to `source/`.
 
-`PROJECT_SCHEMA_VERSION` is 3. `load_project()` migrates older group data to
-layer-scoped `particle_groupings`; `SegmentationRecipe` independently migrates a
+`PROJECT_SCHEMA_VERSION` is 5. `load_project()` migrates older group data to
+layer-scoped `particle_groupings` and initializes optional ONNX/Cellpose inference
+collections; `SegmentationRecipe` independently migrates a
 legacy one-sided `manual_threshold`. Add a forward migration in `_migrate()` and
 tests whenever changing persisted meaning. `ProjectManifest` forbids unknown
 fields, so schema changes require explicit model updates.
 
 Projects record source SHA-256, dimensions, dependency versions, source revision,
-recipes, runs, edits, layers, and particle records. `validate_project()` detects
+recipes, rule-based/ONNX/Cellpose runs, edits, layers, and particle records. `validate_project()` detects
 missing masks, missing/changed source images, and broken grouping references.
 `relink_source()` requires identical dimensions and invalidates result-dependent
 state by default; preserve that traceability behavior.

@@ -6,6 +6,7 @@ import argparse
 import csv
 import json
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 import cv2
@@ -17,6 +18,7 @@ from gst_image.analysis import (
     build_analysis_mask,
     compute_area_fractions,
     compute_project_fractions,
+    run_cellpose_inference,
     run_model_inference,
     segment_particles,
     suggest_specimen_mask,
@@ -26,6 +28,8 @@ from gst_image.image_io import iter_images, load_image, sha256_file
 from gst_image.models import (
     AnalysisRun,
     Calibration,
+    CellposeInferenceRecipe,
+    CellposeInferenceRun,
     ClassDefinition,
     ModelInferenceRun,
     ProjectManifest,
@@ -303,11 +307,16 @@ def _cmd_infer_model(args: argparse.Namespace) -> int:
 
 def _cmd_confirm_model_run(args: argparse.Namespace) -> int:
     manifest, masks = load_project(args.project)
-    run = next((item for item in manifest.model_inference_runs if item.id == args.run), None)
+    run = next(
+        (
+            item
+            for item in [*manifest.model_inference_runs, *manifest.cellpose_inference_runs]
+            if item.id == args.run
+        ),
+        None,
+    )
     if run is None:
         raise ValueError(f"Model inference run was not found: {args.run}")
-    from datetime import UTC, datetime
-
     run.review_status = "confirmed"
     run.reviewed_at = datetime.now(UTC)
     run.reviewer = args.reviewer
@@ -316,6 +325,101 @@ def _cmd_confirm_model_run(args: argparse.Namespace) -> int:
             layer.review_status = "confirmed"
     save_project(args.project, manifest, masks)
     print(f"Confirmed model run {run.id}")
+    return 0
+
+
+def infer_cellpose_image(
+    image_path: Path,
+    output: Path,
+    recipe: CellposeInferenceRecipe,
+    mm_per_pixel: float | None,
+    *,
+    allow_model_download: bool = False,
+    portable: bool = False,
+    force: bool = False,
+) -> Path:
+    """Create a pending-review project from local Cellpose-SAM v2 inference."""
+    target = project_path(output)
+    if target.exists() and not force:
+        raise FileExistsError(f"Project already exists (use --force to update it): {target}")
+    image = load_image(image_path, color=True)
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    domain = build_analysis_mask(gray.shape, specimen_mask=suggest_specimen_mask(gray))
+    calibration = Calibration(mm_per_pixel=mm_per_pixel) if mm_per_pixel else None
+    result = run_cellpose_inference(
+        image,
+        domain,
+        recipe,
+        calibration,
+        allow_model_download=allow_model_download,
+        progress=_progress,
+    )
+    output_class = "Cell" if recipe.modality == "biological" else "Particle"
+    manifest = ProjectManifest(
+        name=image_path.stem,
+        source_path=str(image_path.resolve()),
+        source_sha256=sha256_file(image_path),
+        image_width=image.shape[1],
+        image_height=image.shape[0],
+        calibration=calibration,
+        cellpose_inference_recipes=[recipe],
+    )
+    instance_layer = SegmentationLayer(
+        name=f"Cellpose-SAM v2 {output_class.lower()}s",
+        class_id=_class_for_name(manifest, output_class, 0).id,
+        kind="instances",
+        review_status="pending",
+    )
+    domain_layer = SegmentationLayer(
+        name="Cellpose analysis domain", kind="domain", visible=False, review_status="pending"
+    )
+    run = CellposeInferenceRun(
+        recipe=recipe,
+        layer_ids=[instance_layer.id, domain_layer.id],
+        summary=result.summary,
+        source_bounds_px=result.source_bounds_px,
+        cellpose_version=result.cellpose_version,
+        torch_version=result.torch_version,
+        model_sha256=result.model_sha256,
+        model_cache_path=result.model_cache_path,
+        license_acknowledged_at=datetime.now(UTC),
+    )
+    instance_layer.source_run_id = run.id
+    domain_layer.source_run_id = run.id
+    manifest.layers.extend([instance_layer, domain_layer])
+    manifest.cellpose_inference_runs.append(run)
+    manifest.particle_records[instance_layer.id] = result.particles
+    masks = {instance_layer.id: result.labels, domain_layer.id: domain.astype("uint8")}
+    root = save_project(target, manifest, masks, portable=portable)
+    fractions = compute_project_fractions(manifest, masks)
+    export_analysis(root / "results", manifest, masks, particles=result.particles, fractions=fractions)
+    print(root)
+    return root
+
+
+def _cmd_infer_cellpose(args: argparse.Namespace) -> int:
+    if not args.accept_cellpose_noncommercial_license:
+        raise ValueError(
+            "Cellpose-SAM v2 is CC-BY-NC; pass --accept-cellpose-noncommercial-license to proceed"
+        )
+    recipe = CellposeInferenceRecipe(
+        modality=args.modality,
+        diameter_px=args.diameter,
+        cellprob_threshold=args.cellprob_threshold,
+        flow_threshold=args.flow_threshold,
+        min_size_px=args.min_size,
+        tile_overlap=args.tile_overlap,
+        noncommercial_license_accepted=True,
+    )
+    infer_cellpose_image(
+        Path(args.input),
+        Path(args.output),
+        recipe,
+        args.mm_per_pixel,
+        allow_model_download=args.allow_model_download,
+        portable=args.portable,
+        force=args.force,
+    )
     return 0
 
 
@@ -364,6 +468,24 @@ def build_parser() -> argparse.ArgumentParser:
     infer_model.add_argument("--portable", action="store_true")
     infer_model.add_argument("--force", action="store_true")
     infer_model.set_defaults(handler=_cmd_infer_model)
+
+    infer_cellpose = subparsers.add_parser(
+        "infer-cellpose", help="Run local stock Cellpose-SAM v2; output remains pending review"
+    )
+    infer_cellpose.add_argument("input")
+    infer_cellpose.add_argument("--output", required=True)
+    infer_cellpose.add_argument("--modality", choices=("biological", "metallography"), default="biological")
+    infer_cellpose.add_argument("--mm-per-pixel", type=float)
+    infer_cellpose.add_argument("--diameter", type=float)
+    infer_cellpose.add_argument("--cellprob-threshold", type=float, default=0.0)
+    infer_cellpose.add_argument("--flow-threshold", type=float, default=0.4)
+    infer_cellpose.add_argument("--min-size", type=int, default=15)
+    infer_cellpose.add_argument("--tile-overlap", type=float, default=0.1)
+    infer_cellpose.add_argument("--allow-model-download", action="store_true")
+    infer_cellpose.add_argument("--accept-cellpose-noncommercial-license", action="store_true")
+    infer_cellpose.add_argument("--portable", action="store_true")
+    infer_cellpose.add_argument("--force", action="store_true")
+    infer_cellpose.set_defaults(handler=_cmd_infer_cellpose)
 
     confirm_model = subparsers.add_parser(
         "confirm-model-run", help="Record expert review for a pending model result"

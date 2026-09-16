@@ -183,6 +183,7 @@ def _export_particle_groupings(
     runs = {
         **{run.id: run for run in manifest.runs},
         **{run.id: run for run in manifest.model_inference_runs},
+        **{run.id: run for run in manifest.cellpose_inference_runs},
     }
     for grouping in manifest.particle_groupings:
         layer_id = grouping.source_layer_id
@@ -397,6 +398,9 @@ def export_analysis(
                 "model_inference": [
                     item.model_dump(mode="json") for item in manifest.model_inference_recipes
                 ],
+                "cellpose_inference": [
+                    item.model_dump(mode="json") for item in manifest.cellpose_inference_recipes
+                ],
             },
             indent=2,
         ),
@@ -483,6 +487,7 @@ def export_analysis(
         runs = {
             **{run.id: run for run in manifest.runs},
             **{run.id: run for run in manifest.model_inference_runs},
+            **{run.id: run for run in manifest.cellpose_inference_runs},
         }
         denominators = {
             layer.id: runs[layer.source_run_id].summary.get("analyzed_pixels")
@@ -526,6 +531,7 @@ def export_analysis(
     summaries = {
         **{run.id: run.summary for run in manifest.runs},
         **{run.id: run.summary for run in manifest.model_inference_runs},
+        **{run.id: run.summary for run in manifest.cellpose_inference_runs},
     }
     (destination / "analysis_summary.json").write_text(
         json.dumps(summaries, indent=2), encoding="utf-8"
@@ -550,6 +556,20 @@ def export_analysis(
             **run.summary,
         }
         for run in manifest.model_inference_runs
+    ] + [
+        {
+            "analysis_run_id": run.id,
+            "created_at": run.created_at,
+            "analysis_kind": "cellpose_inference",
+            "model_id": run.recipe.model_id,
+            "model_version": run.cellpose_version,
+            "model_sha256": run.model_sha256,
+            "review_status": run.review_status,
+            "modality": run.recipe.modality,
+            "license": run.license_name,
+            **run.summary,
+        }
+        for run in manifest.cellpose_inference_runs
     ]
     pd.DataFrame(summary_rows).to_csv(destination / "analysis_summary.csv", index=False)
     if source_image is not None and masks:

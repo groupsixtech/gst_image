@@ -25,6 +25,8 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QColorDialog,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QDockWidget,
     QDoubleSpinBox,
     QFileDialog,
@@ -58,6 +60,7 @@ from gst_image.analysis import (
     evaluate_particle_grouping,
     measure_particles,
     particle_group_statistics,
+    run_cellpose_inference,
     run_model_inference,
     segment_particles,
     suggest_specimen_mask,
@@ -77,6 +80,8 @@ from gst_image.models import (
     ROI,
     AnalysisRun,
     Calibration,
+    CellposeInferenceRecipe,
+    CellposeInferenceRun,
     ClassDefinition,
     EditEvent,
     ModelInferenceRun,
@@ -145,6 +150,39 @@ def _analyze_model_source(path, pack_path, recipe, calibration, *, progress, can
         cancelled=cancelled,
     )
     return gray, domain, result, pack, recipe
+
+
+def _analyze_cellpose_source(
+    path,
+    rois,
+    include_ids,
+    recipe,
+    calibration,
+    allow_model_download,
+    *,
+    progress,
+    cancelled,
+):
+    """Run local Cellpose in the standard worker path at source resolution."""
+    source = load_image(path, color=True)
+    gray = cv2.cvtColor(source, cv2.COLOR_BGR2GRAY)
+    progress(0.01, "Building Cellpose analysis domain")
+    domain = build_analysis_mask(
+        gray.shape,
+        rois,
+        suggest_specimen_mask(gray),
+        set(include_ids),
+    )
+    result = run_cellpose_inference(
+        source,
+        domain,
+        recipe,
+        calibration,
+        allow_model_download=allow_model_download,
+        progress=progress,
+        cancelled=cancelled,
+    )
+    return gray, domain, result, recipe
 
 
 def _analyze_source_region(
@@ -1058,6 +1096,12 @@ class MainWindow(QMainWindow):
         )
         self.run_model_button.clicked.connect(self.run_model_inference_dialog)
         layout.addWidget(self.run_model_button)
+        self.run_cellpose_button = QPushButton("Run Cellpose-SAM v2…")
+        self.run_cellpose_button.setToolTip(
+            "Runs local stock Cellpose-SAM v2 at native resolution. The first weight download is explicit."
+        )
+        self.run_cellpose_button.clicked.connect(self.run_cellpose_inference_dialog)
+        layout.addWidget(self.run_cellpose_button)
         layout.addStretch(1)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -1216,7 +1260,10 @@ class MainWindow(QMainWindow):
         run = next(
             (
                 item
-                for item in self.manifest.model_inference_runs
+                for item in [
+                    *self.manifest.model_inference_runs,
+                    *self.manifest.cellpose_inference_runs,
+                ]
                 if layer is not None and item.id == layer.source_run_id
             ),
             None,
@@ -1955,6 +2002,183 @@ class MainWindow(QMainWindow):
         )
         self.thread_pool.start(self.worker)
 
+    def _cellpose_recipe_dialog(self) -> tuple[CellposeInferenceRecipe, bool] | None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Run local Cellpose-SAM v2")
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(
+            QLabel(
+                "Cellpose-SAM v2 runs locally. If the stock weights are missing, checking the "
+                "download option permits a one-time download; source images are never uploaded."
+            )
+        )
+        form = QFormLayout()
+        modality = QComboBox()
+        modality.addItem("Biological cells", "biological")
+        modality.addItem("Metallography particles (experimental)", "metallography")
+        form.addRow("Result type", modality)
+        diameter = QDoubleSpinBox()
+        diameter.setRange(0, 100_000)
+        diameter.setDecimals(1)
+        diameter.setSpecialValueText("Auto")
+        diameter.setValue(0)
+        form.addRow("Diameter (px)", diameter)
+        cellprob = QDoubleSpinBox()
+        cellprob.setRange(-10, 10)
+        cellprob.setDecimals(2)
+        cellprob.setValue(0.0)
+        form.addRow("Cell probability threshold", cellprob)
+        flow = QDoubleSpinBox()
+        flow.setRange(0.01, 10)
+        flow.setDecimals(2)
+        flow.setValue(0.4)
+        form.addRow("Flow threshold", flow)
+        min_size = QSpinBox()
+        min_size.setRange(0, 10_000_000)
+        min_size.setValue(15)
+        form.addRow("Minimum mask size (px)", min_size)
+        overlap = QDoubleSpinBox()
+        overlap.setRange(0, 0.95)
+        overlap.setSingleStep(0.05)
+        overlap.setDecimals(2)
+        overlap.setValue(0.1)
+        form.addRow("Tile overlap", overlap)
+        layout.addLayout(form)
+        allow_download = QCheckBox("Allow one-time download if local cpsam_v2 weights are absent")
+        layout.addWidget(allow_download)
+        acknowledge = QCheckBox(
+            "I acknowledge that stock Cellpose-SAM v2 weights are CC-BY-NC and this run is non-commercial."
+        )
+        layout.addWidget(acknowledge)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Ok
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None
+        if not acknowledge.isChecked():
+            QMessageBox.warning(
+                self,
+                "Cellpose licence acknowledgement",
+                "Acknowledge the non-commercial Cellpose-SAM v2 licence before running it.",
+            )
+            return None
+        return (
+            CellposeInferenceRecipe(
+                modality=modality.currentData(),
+                diameter_px=diameter.value() or None,
+                cellprob_threshold=cellprob.value(),
+                flow_threshold=flow.value(),
+                min_size_px=min_size.value(),
+                tile_overlap=overlap.value(),
+                noncommercial_license_accepted=True,
+            ),
+            allow_download.isChecked(),
+        )
+
+    def run_cellpose_inference_dialog(self) -> None:
+        """Run stock Cellpose-SAM v2 in a cancellable worker after explicit acknowledgement."""
+        if self.current_path is None or self.manifest is None or self.worker is not None:
+            return
+        if not self.current_path.exists() or sha256_file(self.current_path) != self.manifest.source_sha256:
+            QMessageBox.critical(
+                self,
+                "Source changed",
+                "Relink the unchanged source as a new revision before running Cellpose inference.",
+            )
+            return
+        settings = self._cellpose_recipe_dialog()
+        if settings is None:
+            return
+        recipe, allow_model_download = settings
+        scope_ids: list[str] = []
+        if self.selected_roi_only.isChecked():
+            selected = self._selected_full_resolution_roi()
+            if selected is None:
+                QMessageBox.information(
+                    self,
+                    "Selected-ROI analysis",
+                    "Select exactly one Include or Analysis box before running Cellpose.",
+                )
+                return
+            scope_ids = [selected.id]
+        self.run_scope_ids = scope_ids
+        self.worker = FunctionWorker(
+            _analyze_cellpose_source,
+            self.current_path,
+            list(self.manifest.rois),
+            scope_ids,
+            recipe,
+            self.manifest.calibration,
+            allow_model_download,
+            with_callbacks=True,
+        )
+        self.worker.signals.progress.connect(self._progress)
+        self.worker.signals.result.connect(self._cellpose_inference_result)
+        self.worker.signals.error.connect(self._worker_error)
+        self.worker.signals.finished.connect(self._worker_finished)
+        self.preview_button.setEnabled(False)
+        self.run_button.setEnabled(False)
+        self.run_model_button.setEnabled(False)
+        self.run_cellpose_button.setEnabled(False)
+        self.cancel_button.setEnabled(True)
+        self.preview_status.setText("Running local Cellpose-SAM v2 at original source resolution")
+        self.thread_pool.start(self.worker)
+
+    def _cellpose_inference_result(self, payload) -> None:
+        gray, domain, result, recipe = payload
+        assert self.manifest is not None
+        output_class = "Cell" if recipe.modality == "biological" else "Particle"
+        instance_layer = SegmentationLayer(
+            name=f"Cellpose-SAM v2 {output_class.lower()}s",
+            class_id=self._model_class(output_class, 0).id,
+            kind="instances",
+            scope_roi_ids=list(self.run_scope_ids),
+            review_status="pending",
+        )
+        domain_layer = SegmentationLayer(
+            name="Cellpose analysis domain",
+            kind="domain",
+            scope_roi_ids=list(self.run_scope_ids),
+            visible=False,
+            review_status="pending",
+        )
+        run = CellposeInferenceRun(
+            recipe=recipe,
+            layer_ids=[instance_layer.id, domain_layer.id],
+            summary=result.summary,
+            source_bounds_px=result.source_bounds_px,
+            cellpose_version=result.cellpose_version,
+            torch_version=result.torch_version,
+            model_sha256=result.model_sha256,
+            model_cache_path=result.model_cache_path,
+            license_acknowledged_at=datetime.now(UTC),
+        )
+        instance_layer.source_run_id = run.id
+        domain_layer.source_run_id = run.id
+        self.manifest.cellpose_inference_recipes.append(recipe)
+        self.manifest.cellpose_inference_runs.append(run)
+        self.manifest.layers.extend([instance_layer, domain_layer])
+        self.manifest.particle_records[instance_layer.id] = result.particles
+        self.layer_masks[instance_layer.id] = result.labels
+        self.layer_masks[domain_layer.id] = domain.astype(np.uint8)
+        self.gray = gray
+        self.analysis_mask = domain
+        self.current_layer_id = instance_layer.id
+        self.current_labels = result.labels
+        self.current_mask = (result.labels > 0).astype(np.uint8)
+        self.particles = result.particles
+        self._render_visible_layers()
+        summary = {"review_status": "pending expert review", **result.summary}
+        if recipe.modality == "metallography":
+            summary["validation_note"] = "Experimental metallography result; validation required"
+        self._show_summary(summary)
+        self._refresh_all()
+        self._set_dirty(True)
+        self.preview_status.setText("Cellpose result saved as pending review; inspect overlays before confirmation")
+
     def _model_class(self, name: str, index: int) -> ClassDefinition:
         assert self.manifest is not None
         existing = next(
@@ -2315,6 +2539,7 @@ class MainWindow(QMainWindow):
         self.preview_button.setEnabled(True)
         self.run_button.setEnabled(True)
         self.run_model_button.setEnabled(True)
+        self.run_cellpose_button.setEnabled(True)
         self.full_resolution_button.setEnabled(True)
         self.overview_button.setEnabled(True)
         self.cancel_button.setEnabled(False)
@@ -2782,6 +3007,11 @@ class MainWindow(QMainWindow):
             for run in self.manifest.model_inference_runs
             if requested_ids.intersection(run.layer_ids)
         }
+        cellpose_run_ids = {
+            run.id
+            for run in self.manifest.cellpose_inference_runs
+            if requested_ids.intersection(run.layer_ids)
+        }
         removed_ids = set(requested_ids)
         for run in self.manifest.runs:
             if run.id in run_ids:
@@ -2789,10 +3019,13 @@ class MainWindow(QMainWindow):
         for run in self.manifest.model_inference_runs:
             if run.id in model_run_ids:
                 removed_ids.update(run.layer_ids)
+        for run in self.manifest.cellpose_inference_runs:
+            if run.id in cellpose_run_ids:
+                removed_ids.update(run.layer_ids)
         removed_ids.update(
             layer.id
             for layer in self.manifest.layers
-            if layer.source_run_id in run_ids | model_run_ids
+            if layer.source_run_id in run_ids | model_run_ids | cellpose_run_ids
         )
         self.manifest.layers = [
             layer for layer in self.manifest.layers if layer.id not in removed_ids
@@ -2800,6 +3033,9 @@ class MainWindow(QMainWindow):
         self.manifest.runs = [run for run in self.manifest.runs if run.id not in run_ids]
         self.manifest.model_inference_runs = [
             run for run in self.manifest.model_inference_runs if run.id not in model_run_ids
+        ]
+        self.manifest.cellpose_inference_runs = [
+            run for run in self.manifest.cellpose_inference_runs if run.id not in cellpose_run_ids
         ]
         for layer_id in removed_ids:
             self.layer_masks.pop(layer_id, None)
@@ -3054,7 +3290,17 @@ class MainWindow(QMainWindow):
             ),
             None,
         )
-        return (model_run.summary.get("analyzed_pixels"), True) if model_run else (None, True)
+        if model_run is not None:
+            return model_run.summary.get("analyzed_pixels"), True
+        cellpose_run = next(
+            (
+                item
+                for item in self.manifest.cellpose_inference_runs
+                if layer is not None and item.id == layer.source_run_id
+            ),
+            None,
+        )
+        return (cellpose_run.summary.get("analyzed_pixels"), True) if cellpose_run else (None, True)
 
     def _save_particle_grouping(self, grouping: ParticleGrouping) -> None:
         if self.manifest is None or self.current_layer_id is None:

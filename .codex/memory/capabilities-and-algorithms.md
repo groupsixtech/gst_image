@@ -15,10 +15,13 @@ summarizes current behavior and the implementation choices agents must preserve.
   merge instance masks; measure particle morphology and fractions.
 - Train Weld/HAZ/Base/custom region classes from painted samples, then edit the
   multiclass result mask.
+- Run reviewed local ONNX model packs or optional local stock Cellpose-SAM v2
+  instance inference; model-derived layers remain pending review until confirmed.
 - Filter and group particles by equivalent radius, diameter, area, circularity,
   or combined criteria without changing the original label image.
 - Export masks, overlays, CSV summaries/tables/histograms, recipes, and complete
-  provenance; use CLI `analyze`, `batch`, `export`, and `validate-project`.
+  provenance; use CLI `analyze`, `batch`, `infer-model`, `infer-cellpose`, `export`,
+  and `validate-project`.
 
 The reported “volume fraction” is a two-dimensional segmented-area fraction used
 as a stereological estimate, not a 3D reconstruction. Equivalent radii are
@@ -84,6 +87,7 @@ instance layer, never only a global particle list.
 | pandas | CSV exports and aggregate tables. |
 | PySide6 | Desktop widgets, graphics canvas, workers, undo commands. |
 | matplotlib | GUI plots for particle distributions/group summaries. |
+| Cellpose (optional) | Local CPU Cellpose-SAM v2 labelled-instance inference; stock weights are explicitly downloaded to Cellpose's cache and require a CC-BY-NC acknowledgement. |
 
 ## Evaluation and exports
 

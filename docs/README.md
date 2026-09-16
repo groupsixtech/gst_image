@@ -15,8 +15,8 @@ order below once; thereafter, use the linked topic pages as a reference while an
    understand its parameters, and tune it systematically with worked examples.
 5. [Assisted region classification](region-classification.md) — paint examples, train the
    supervised classifier, improve its result, and understand its scikit-image/scikit-learn steps.
-6. [Reviewed ONNX model packs](model-inference.md) — run validated offline phase and particle
-   models, preserve their provenance, and record expert review.
+6. [Reviewed ML model workflows](model-inference.md) — run validated ONNX phase/particle packs
+   or local Cellpose-SAM instances, preserve provenance, and record expert review.
 7. [Review, correction, grouping, and export](review-correction-grouping-export.md) — inspect
    results, repair masks, separate/merge particles, group measurements, and deliver traceable
    files.

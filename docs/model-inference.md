@@ -41,6 +41,51 @@ The core blends overlapping tile probabilities, clips all predictions to the
 project's analysis domain, and retains the existing watershed and particle
 measurement path for particle labels.
 
+## Local Cellpose-SAM v2 instances
+
+GST Image also provides an optional **Run Cellpose-SAM v2…** workflow for 2D
+biological-cell or experimental metallography-particle instances. It creates a
+pending-review instance layer, so the normal overlay, brush, split/merge,
+grouping, measurement, export, and reviewer-confirmation workflow still applies.
+Cellpose does not create a phase-map layer.
+
+Install the separate runtime when needed:
+
+```powershell
+python -m pip install -e ".[cellpose]"
+```
+
+The workflow runs the stock `cpsam_v2` model locally on CPU. It never uploads a
+source image. If the model is not already in Cellpose's local cache, the user
+must explicitly allow a one-time weight download in the dialog (or supply
+`--allow-model-download` at the CLI); GST Image never bundles the weights.
+
+Stock Cellpose-SAM weights are CC-BY-NC. The dialog requires a non-commercial
+use acknowledgement, and every run records the acknowledgement, Cellpose/Torch
+versions, local weight SHA-256 and cache path, timing, settings, source bounds,
+and attribution in the project. Do not use this stock workflow for commercial
+work without separate rights from the maintainers.
+
+Select **Biological cells** or **Metallography particles** before running. The
+choice controls the result class name and provenance only. Metallography output
+is experimental until it has passed the held-out gold-mask and expert-review
+gates documented below. The current specimen/include/exclude analysis domain is
+always enforced: Cellpose labels are restored in full source coordinates and
+clipped to that domain before measurement.
+
+The advanced controls retain Cellpose defaults: automatic diameter, cell
+probability threshold `0.0`, flow threshold `0.4`, minimum size `15 px`, and
+tile overlap `0.1`. Cellpose may finish its current model evaluation before a
+cancellation request is observed; GST Image discards the late result rather
+than saving it.
+
+For scripted use:
+
+```powershell
+gst-image-cli infer-cellpose input.png --output result.gstproj --modality biological `
+  --accept-cellpose-noncommercial-license --allow-model-download
+```
+
 ## Maintainer workflow
 
 Train outside the desktop application on reviewed source-image groups, not

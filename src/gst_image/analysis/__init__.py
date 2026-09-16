@@ -1,6 +1,7 @@
 """Public analysis API."""
 
 from .calibration import create_measurement
+from .cellpose_inference import run_cellpose_inference
 from .fractions import compute_area_fractions, compute_project_fractions
 from .groups import (
     assign_particle_groups,
@@ -30,6 +31,7 @@ __all__ = [
     "particle_group_statistics",
     "particle_group_summary",
     "rasterize_roi",
+    "run_cellpose_inference",
     "run_model_inference",
     "segment_particles",
     "suggest_specimen_mask",

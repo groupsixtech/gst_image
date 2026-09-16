@@ -32,6 +32,8 @@ DEPENDENCIES = (
     "scipy",
     "tifffile",
     "onnxruntime",
+    "cellpose",
+    "torch",
 )
 
 
@@ -86,6 +88,9 @@ def _migrate(payload: dict[str, Any]) -> dict[str, Any]:
         payload.setdefault("model_inference_runs", [])
         for layer in payload.get("layers", []):
             layer.setdefault("review_status", "not_required")
+    if version < 5:
+        payload.setdefault("cellpose_inference_recipes", [])
+        payload.setdefault("cellpose_inference_runs", [])
     # SegmentationRecipe's pre-validator translates legacy manual_threshold values wherever
     # recipes occur, including recipes embedded in run history.
     payload["schema_version"] = PROJECT_SCHEMA_VERSION
@@ -207,7 +212,10 @@ def validate_project(path: str | Path, *, verify_hash: bool = True) -> list[str]
             issues.append(
                 f"Active particle grouping {grouping.name!r} belongs to a different layer"
             )
-    model_runs = {run.id: run for run in manifest.model_inference_runs}
+    model_runs = {
+        **{run.id: run for run in manifest.model_inference_runs},
+        **{run.id: run for run in manifest.cellpose_inference_runs},
+    }
     for run in model_runs.values():
         for layer_id in run.layer_ids:
             if layer_id not in layer_ids:
@@ -248,6 +256,8 @@ def relink_source(
         manifest.runs.clear()
         manifest.model_inference_runs.clear()
         manifest.model_inference_recipes.clear()
+        manifest.cellpose_inference_runs.clear()
+        manifest.cellpose_inference_recipes.clear()
         manifest.particle_records.clear()
         manifest.particle_groupings.clear()
         manifest.active_particle_groupings.clear()
