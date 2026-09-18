@@ -15,12 +15,14 @@ order below once; thereafter, use the linked topic pages as a reference while an
    understand its parameters, and tune it systematically with worked examples.
 5. [Assisted region classification](region-classification.md) — paint examples, train the
    supervised classifier, improve its result, and understand its scikit-image/scikit-learn steps.
-6. [Reviewed ML model workflows](model-inference.md) — run validated ONNX phase/particle packs
-   or local Cellpose-SAM instances, preserve provenance, and record expert review.
-7. [Review, correction, grouping, and export](review-correction-grouping-export.md) — inspect
+6. [Reviewed model workflows](model-inference.md) — run validated ONNX phase/particle packs and
+   preserve provenance for model-derived results.
+7. [Cellpose-SAM v2](cellpose.md) — install and run local stock Cellpose instance segmentation,
+   tune it, review its outputs, and prepare/train a custom Cellpose model outside GST Image.
+8. [Review, correction, grouping, and export](review-correction-grouping-export.md) — inspect
    results, repair masks, separate/merge particles, group measurements, and deliver traceable
    files.
-8. [Glossary and troubleshooting](glossary-and-troubleshooting.md) — plain-language definitions,
+9. [Glossary and troubleshooting](glossary-and-troubleshooting.md) — plain-language definitions,
    common failure symptoms, and recovery actions.
 
 ## A sensible first exercise

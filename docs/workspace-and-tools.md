@@ -16,6 +16,7 @@ pixels, even when the displayed overview is scaled.
 | **Export…** (`Ctrl+E`) | Writes masks, tables, recipe/provenance JSON, fractions, native ROI source crops, per-layer segmentation images, and grouping overlays to a chosen folder. | Delivering data outside GST Image. |
 | **Quit** | Closes the application. | After saving work. |
 | **Analysis > Preview** (`Shift+A`) | Same as the Analysis panel’s Preview button. | Quickly retesting after a small adjustment. |
+| **Run Cellpose-SAM v2…** | Runs the local stock Cellpose-SAM model at native resolution inside Analysis boxes and saves a pending-review instance layer. | You need Cellpose-style individual-cell or particle instances and have reviewed the [Cellpose guide](cellpose.md), including its CC-BY-NC and scope requirements. |
 
 **Edit > Undo/Redo** reverses or reapplies eligible manual paint edits. **Decrease brush radius**
 (`[`), **Increase brush radius** (`]`) adjust a brush when a brush-like tool is active.
@@ -73,6 +74,11 @@ multiclass layers are region classifications; domain layers record the denominat
 matching result and are normally hidden. **Delete selected** removes selected layers and dependent
 records. **Copy ROI mask image** places a native-resolution black-and-white crop of the active
 result on the clipboard.
+
+Model-derived layers, including Cellpose-SAM results, begin as **pending review**. Select either a
+result layer or its matching domain layer and use **Confirm selected model result…** only after a
+qualified reviewer has inspected the native-resolution overlay and measurements; the project then
+records that reviewer and confirmation time.
 
 **Colour each particle individually** — in the Layers tab and under **View** (`Shift+C`) —
 repaints every visible instance layer so each label carries its own colour instead of the single

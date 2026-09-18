@@ -11,7 +11,12 @@ observed section; neither value is a direct three-dimensional reconstruction.
 
 ## Install
 
-Python 3.12 through 3.14 is supported.
+GST Image is Windows-focused and supports Python 3.12 through 3.14. Use 64-bit
+Python on a 64-bit Windows installation. The base application, rule-based
+segmentation, assisted region classification, and export do not need an NVIDIA
+GPU, CUDA, PyTorch, Cellpose, or ONNX Runtime.
+
+### Base application
 
 ```powershell
 python -m venv .venv
@@ -22,6 +27,143 @@ python -m pip install -r requirements-dev.txt
 
 `requirements-lock.txt` records the exact Windows/Python 3.14 environment used for the
 verified release when a fully pinned installation is required.
+
+### Optional reviewed ONNX model packs (CPU)
+
+Install the `ml` extra to use **Run reviewed model pack...** or
+`gst-image-cli infer-model`:
+
+```powershell
+python -m pip install -e ".[ml]"
+python -c "import onnxruntime as ort; print(ort.__version__); print(ort.get_available_providers())"
+```
+
+This installs the CPU `onnxruntime` package. GST Image currently creates ONNX sessions with
+`CPUExecutionProvider`, so an NVIDIA driver, CUDA, cuDNN, PyTorch, and `onnxruntime-gpu` are **not
+required and will not accelerate ONNX-pack inference in this release**. ONNX Runtime's Windows
+wheel requires the Microsoft Visual C++ 2019 runtime; install the current x64
+[Visual C++ Redistributable](https://aka.ms/vc14/vc_redist.x64.exe) if it is absent or ONNX Runtime
+reports a missing MSVC DLL. The extra supplies the runtime, not a model: obtain a reviewed model
+pack containing `manifest.json` and `model.onnx` as described in the
+[ONNX model-pack guide](docs/model-inference.md).
+
+### ONNX model weights: download, install, and validate
+
+An ONNX model pack is required to run `infer-model`; GST Image does not bundle pretrained ONNX
+weights and does not download them on demand. A pack is a local directory, not a package to install
+with `pip`:
+
+```text
+model-packs/
+  approved-pack/
+    manifest.json
+    model.onnx
+```
+
+`manifest.json` is required alongside the weights. It declares the model identity, input channel
+order and normalization, tile geometry, output tensors, semantic class values, and
+validation/provenance; it should also record the model SHA-256. GST Image currently accepts its
+documented `unet_2d` NCHW semantic and/or
+particle-output contract. A generic Hugging Face ONNX file, detector, classifier, or transformer
+is **not** directly loadable merely because it has an `.onnx` extension.
+
+Find candidate pretrained weights on the [Hugging Face ONNX model search](https://huggingface.co/models?library=onnx), then read the model card, licence, training-data
+description, input/output definition, and held-out metrics before downloading. Prefer a publisher
+who supplies a GST Image-compatible pack. Otherwise, an owner must first verify that the ONNX graph
+meets the contract, create a correct `manifest.json`, and validate the result; do not invent output
+names, normalization, or class mappings to make an unrelated model appear compatible.
+
+To download a reviewed public or authorized private Hugging Face repository into a local pack
+directory, install the Hub CLI in the active virtual environment and pin a reviewed revision:
+
+```powershell
+python -m pip install --upgrade huggingface_hub
+hf auth login                         # required for private or gated repositories
+hf download ORG_OR_USER/MODEL_REPO --dry-run
+hf download ORG_OR_USER/MODEL_REPO --revision COMMIT_OR_TAG --local-dir .\model-packs\approved-pack
+Get-FileHash .\model-packs\approved-pack\model.onnx -Algorithm SHA256
+gst-image-cli infer-model input.tif --model-pack .\model-packs\approved-pack --output model-result.gstproj
+```
+
+Replace the uppercase placeholders with the repository and exact revision approved for the work.
+The `--dry-run` step reveals download size before transfer. Record the resulting revision and
+SHA-256 in the pack's `manifest.json` and analysis record. For a gated model, accept its terms in
+the browser before `hf auth login`; never place an access token in a project, model pack, or shell
+history.
+
+For a custom model, train and export a compatible `unet_2d` ONNX graph outside GST Image, create
+the complete pack manifest, calculate/record the SHA-256, and validate it on held-out source-image
+groups before loading it. This is an integration and validation step, not a file rename. The
+minimum release gates and required manifest fields are in the [ONNX model-pack guide]
+(docs/model-inference.md).
+
+For metallographic micrographs, the most applicable training data is usually your own
+expert-annotated images acquired with the same preparation, etching, microscope, resolution, and
+measurement definition. Useful public starting points to investigate - not drop-in GST Image model
+packs - include:
+
+| Dataset | Potential fit | Important limitation |
+| --- | --- | --- |
+| [MetalDAM](https://huggingface.co/datasets/Voxel51/OD_MetalDAM) | SEM additive-manufacturing microstructures with semantic masks for matrix, austenite, martensite/austenite, precipitates, and defects. | Class definitions, alloys, magnifications, and annotations may not match this project's measurement definition. |
+| [EMVista](https://huggingface.co/datasets/InnovatorLab/EMVista) | Electron-microscopy microstructure benchmark with instance-level annotations; useful for investigating instance-boundary training/evaluation. | Confirm downloadable label format, licence, and domain match before using it for training. |
+| [SWXD-derived weld-defect data](https://huggingface.co/datasets/AI4Manufacturing/103) | Weld-defect masks from digitized X-ray films. | Appropriate only for radiographic weld-defect work, not optical/SEM phase segmentation. |
+
+Keep samples from the same specimen, image, session, or stitch together in one split. Public data
+can help initialize a training experiment, but it cannot replace held-out validation on the target
+material and imaging workflow.
+
+### Optional Cellpose-SAM v2 (CPU)
+
+Install the Cellpose extra to use local stock Cellpose-SAM instance segmentation on the CPU:
+
+```powershell
+python -m pip install -e ".[cellpose]"
+python -c "import cellpose, torch; print(cellpose.__version__); print(torch.__version__); print(torch.cuda.is_available())"
+```
+
+Cellpose requires PyTorch; this installation reuses an existing PyTorch install or installs one in
+the active virtual environment. `False` from `torch.cuda.is_available()` is expected unless you
+have deliberately installed a CUDA-enabled PyTorch wheel. The stock model weights download to
+Cellpose's local cache only when an inference run first needs them; source images are not uploaded.
+
+### Optional NVIDIA GPU acceleration for Cellpose
+
+GPU acceleration is available only for Cellpose on a CUDA-capable NVIDIA GPU. It is not used by
+the current ONNX-pack path. Complete the following in order:
+
+1. Confirm that Windows can see the NVIDIA GPU, then download and install the current driver for
+   that exact GPU from [NVIDIA's driver page](https://www.nvidia.com/drivers). Restart if the
+   installer asks. In a new PowerShell window, run `nvidia-smi`; it must show the GPU and driver.
+2. In the active `.venv`, use the [PyTorch Start Locally selector](https://pytorch.org/get-started/locally/)
+   with **Stable**, **Windows**, **Pip**, **Python**, and the CUDA build supported by the driver.
+   Copy its generated command exactly. For example, if the selector/driver combination supports
+   CUDA 12.6:
+
+   ```powershell
+   python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
+   ```
+
+   Do not copy that example blindly: choose a CUDA wheel no newer than the CUDA version reported
+   by `nvidia-smi`, and prefer the selector over a manually guessed version.
+3. Install the GPU Cellpose extra after PyTorch, then verify that the same virtual environment can
+   see the GPU:
+
+   ```powershell
+   python -m pip install -e ".[cellpose-gpu]"
+   python -c "import torch; print(torch.__version__); print(torch.version.cuda); print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'No CUDA device')"
+   ```
+
+For this prebuilt-PyTorch-wheel workflow, the NVIDIA **driver** is required, but the full CUDA
+Toolkit, cuDNN, Visual Studio, and `nvcc` are not. PyTorch supplies its required CUDA user-space
+libraries. Install the [CUDA Toolkit](https://developer.nvidia.com/cuda-downloads) only when you
+are developing CUDA code, building PyTorch from source, or compiling a CUDA extension; NVIDIA's
+current Windows Toolkit installer does not install the driver for you, so keep the driver step
+separate.
+
+If the verification command prints `False`, do not select **NVIDIA CUDA GPU** in GST Image. First
+update/check the NVIDIA driver, repeat the PyTorch-selector installation in the active environment,
+and verify again. GST Image deliberately fails a requested GPU Cellpose run rather than silently
+falling back to CPU. Windows AMD/ROCm acceleration is not supported by this integration.
 
 ## Run
 
@@ -38,7 +180,50 @@ not on `PATH`.
 
 New GUI users should begin with the [GST Image training guide](docs/README.md). It provides a
 linked onboarding path, full panel/tool reference, segmentation tuning guidance, assisted
-region-classification training, result review, grouping, export, and troubleshooting.
+region-classification training, Cellpose-SAM usage and external custom-training guidance, result
+review, grouping, export, and troubleshooting.
+
+## Cellpose workflow and licensing
+
+GST Image can run the stock Cellpose-SAM v2 (`cpsam_v2`) model locally for 2-D instance
+segmentation. `cpsam_v2` is the only Cellpose checkpoint GST Image selects; its first use downloads
+the stock weights into Cellpose's local cache and creates a pending-review cell or particle instance
+layer. The stock weights are CC-BY-NC, so separate rights are required for commercial use.
+
+The current upstream Cellpose model family also includes these checkpoints, but GST Image does not
+select or load them:
+
+| Upstream Cellpose checkpoint | Description | Use in GST Image |
+| --- | --- | --- |
+| `cpsam_v2` | Current Cellpose-SAM model using a SAM-ViTL backbone with an upstream low-contrast training fix. | **Supported stock model.** |
+| `cpdino` | CellposeDINO model using the larger DINOv3-ViTL backbone. | Not supported. Run it in upstream Cellpose. |
+| `cpdino-vitb` | Smaller CellposeDINO model using the DINOv3-ViTB backbone. | Not supported. Run it in upstream Cellpose. |
+| `cpsam` | Original Cellpose-SAM model using a SAM-ViTL backbone. | Not supported. Run it in upstream Cellpose. |
+
+Upstream Cellpose downloads a built-in checkpoint the first time it is selected. Outside GST Image,
+choose a model in the Cellpose GUI, run
+`python -m cellpose --pretrained_model cpdino`, or construct
+`models.CellposeModel(pretrained_model="cpdino")` in Python. See the current
+[Cellpose model reference](https://cellpose.readthedocs.io/en/latest/models.html) for details.
+
+### Add a custom model to upstream Cellpose
+
+Custom Cellpose models are added to **upstream Cellpose**, not GST Image. After fine-tuning a model
+from the Cellpose GUI or CLI, either register the file for the GUI or provide its full path:
+
+```powershell
+python -m cellpose --add_model C:\cellpose-data\train\models\my_model
+python -m cellpose --pretrained_model C:\cellpose-data\train\models\my_model
+```
+
+The first command makes the checkpoint available under the Cellpose GUI's custom-model selection;
+the second runs it directly. In Python, use
+`models.CellposeModel(pretrained_model=r"C:\cellpose-data\train\models\my_model")`. Train from
+the built-in `cpsam` model with reviewed instance labels, keep all intended training images in the
+same training folder, and test on held-out source groups. GST Image cannot import, select, or run
+a custom Cellpose checkpoint; use upstream Cellpose for that result or complete a separate,
+validated ONNX-pack integration. See the [Cellpose-SAM usage, tuning, and training guide]
+(docs/cellpose.md) for the full fine-tuning workflow.
 
 ## Typical GUI workflow
 
@@ -82,7 +267,11 @@ region-classification training, result review, grouping, export, and troubleshoo
 7. For macro zones, follow the [assisted region-classification guide](docs/region-classification.md)
    to select one Analysis box, paint and erase example strokes for Weld, HAZ, Base, or custom
    classes, and train the classifier only within that box at the Selected ROI resolution.
-8. Save the project and export masks, native ROI source images, per-layer segmentation overlays,
+8. For biological cells or experimental metallography particles, follow the
+   [Cellpose-SAM guide](docs/cellpose.md): draw Analysis boxes, run the local stock model at native
+   resolution, tune its instance settings, and confirm the reviewed result. GST Image's Cellpose
+   integration is inference-only; custom-model training remains an external Cellpose workflow.
+9. Save the project and export masks, native ROI source images, per-layer segmentation overlays,
    measurements, fractions, particle CSVs, saved grouping definitions, particle assignments,
    group statistics, and crop-aware color grouping overlays.
 
@@ -151,6 +340,7 @@ particle area fractions retain their foreground/background meaning.
 ```powershell
 gst-image-cli analyze test/img/example.jpg --output analysis.gstproj --mm-per-pixel 0.001
 gst-image-cli batch test/img --output test-output --recipe recipe.json --calibration-csv scales.csv
+gst-image-cli infer-cellpose input.tif --output cellpose-result.gstproj --modality biological --device cpu --accept-cellpose-noncommercial-license --allow-model-download
 gst-image-cli export analysis.gstproj --output exported
 gst-image-cli validate-project analysis.gstproj
 ```
