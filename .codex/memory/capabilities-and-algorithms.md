@@ -80,6 +80,13 @@ final run to that box. Overview/Selected-ROI resolution percentages affect
 display, preview, and region-classification feature extraction only; the final
 particle run always reads original-resolution pixels.
 
+Cellpose has deliberately different scope semantics: it has no overview run and
+uses only Analysis boxes. One selected Analysis box runs alone; otherwise it
+runs all of them, clips results to the valid domain, and restores native source
+coordinates. ONNX-pack and Cellpose layers stay pending review until a reviewer
+confirms their run. Their integration details and limits are in
+[model inference and review](inference-and-review.md).
+
 ## Libraries and their intended roles
 
 | Library | Use in this repository |
@@ -95,7 +102,9 @@ particle run always reads original-resolution pixels.
 | pandas | CSV exports and aggregate tables. |
 | PySide6 | Desktop widgets, graphics canvas, workers, undo commands. |
 | matplotlib | GUI plots for particle distributions/group summaries. |
-| Cellpose (optional) | Local Cellpose-SAM v2 labelled-instance inference on CPU or a CUDA-capable NVIDIA GPU; stock weights are explicitly downloaded to Cellpose's cache and require a CC-BY-NC acknowledgement. |
+| ONNX Runtime (optional) | Validated local ONNX packs only; the current application explicitly uses its CPU execution provider. |
+| Cellpose (optional) | Local stock Cellpose-SAM v2 labelled-instance inference; weights are explicitly downloaded to Cellpose's cache and require a CC-BY-NC acknowledgement. |
+| PyTorch (optional) | Required by Cellpose; a matching CUDA build is needed before the NVIDIA GPU Cellpose option can run. |
 
 ## Evaluation and exports
 

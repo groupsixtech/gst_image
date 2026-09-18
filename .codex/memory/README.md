@@ -8,6 +8,8 @@ to the change.
 
 ## Notes
 
+- [Model inference and review](inference-and-review.md) — contracts and
+  guardrails for optional ONNX packs, Cellpose-SAM v2, and reviewable results.
 - [Architecture and persistence](architecture.md) — layers, runtime data flow,
   model ownership, project format, coordinate rules, and entry points.
 - [Capabilities and algorithms](capabilities-and-algorithms.md) — current user
@@ -22,3 +24,6 @@ Update the affected note in the same change when altering an entry point,
 persisted schema, algorithm, dependency, export, or user-visible workflow.
 Prefer links to source files and tests over duplicating implementation details
 that will drift.
+
+Planning documents such as `roadmap.md` are useful context, but the checked-in
+implementation and these notes are the source of truth when they differ.

@@ -25,6 +25,8 @@ reimplement algorithms. `pyproject.toml` exposes `gst-image` for
 | Particle pipeline | `analysis/particles.py`, `preprocess.py` | Segmentation, labels, morphology measurements. |
 | Domains and ROIs | `analysis/masks.py` | Rasterization and valid analysis domain construction. |
 | Region ML | `analysis/regions.py` | Stroke-trained multi-class overview classification. |
+| ONNX model inference | `analysis/model_inference.py` | Validated local model packs and tiled, native-resolution CPU inference. |
+| Cellpose inference | `analysis/cellpose_inference.py` | Local stock `cpsam_v2` instance inference within Analysis boxes. |
 | Grouping/fractions | `analysis/groups.py`, `fractions.py` | Post-analysis particle groups and area estimates. |
 | Files/results | `project.py`, `export.py`, `image_io.py` | Project lifecycle, output files, and large-image loading. |
 | Desktop UI | `mainwindow.py`, `canvas.py`, `workers.py` | Application state, native-coordinate canvas, threaded jobs. |
@@ -49,6 +51,24 @@ The GUI maintains source-coordinate training strokes. It generates an overview,
 rescales strokes to it, runs `classify_regions()` in a worker, then maps labels
 back to source dimensions as a multiclass layer. It is separate from particle
 preview/selected-ROI analysis.
+
+### Optional model inference
+
+`ModelPack.open()` validates a separately installed ONNX pack's manifest and
+weights hash before `run_model_inference()` blends overlapping native-resolution
+tiles. The current session explicitly uses `CPUExecutionProvider`; do not imply
+that installing CUDA or `onnxruntime-gpu` accelerates this path. Its semantic
+and/or particle layers, plus their domain layer, are linked to one pending-review
+`ModelInferenceRun`.
+
+`run_cellpose_inference()` lazy-loads only the stock `cpsam_v2` model. GUI runs
+operate on project Analysis boxes (one selected box, otherwise all boxes), use
+the normal valid domain, restore each crop to source coordinates, and then
+measure labels. It converts OpenCV BGR input to RGB for Cellpose. Preserve the
+explicit first-download permission, CC-BY-NC acknowledgement, GPU availability
+check, and cancellation behavior; a cancelled run must not save a late result.
+See [model inference and review](inference-and-review.md) for the complete
+contract and change checklist.
 
 ### GUI execution
 
@@ -95,4 +115,7 @@ Each result layer can reference `source_run_id`; each particle grouping is tied
 to `source_layer_id`. Domain layers use the same `scope_roi_ids` as the analysis
 layer. When deleting or replacing a layer/ROI, clean up dependent masks, records,
 groups, and runs consistently—see the GUI tests covering ROI deletion and layer
-selection.
+selection. For ONNX and Cellpose, every run-owned result and domain layer must
+both appear in `run.layer_ids` and point back to that run with `source_run_id`;
+they start as `review_status="pending"` and are confirmed together. This
+bidirectional ownership is validated and exported as provenance.

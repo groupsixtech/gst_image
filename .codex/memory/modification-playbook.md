@@ -11,6 +11,8 @@ expectations. Use this note for the technical change path.
 | New image algorithm | `analysis/`, then focused synthetic tests; keep GUI orchestration thin. |
 | New GUI control or shortcut | `mainwindow.py`/component, canvas behavior, `pytest-qt` regression test. |
 | New grouping metric | `ParticleCriteria`, `analysis/groups.py`, grouping panel, exports, migrations if persisted. |
+| ONNX model-pack behavior | `ModelPackManifest`/`model_inference.py`, model results, GUI/CLI, project/export validation, and model-inference tests. |
+| Cellpose behavior | `CellposeInferenceRecipe`/`cellpose_inference.py`, GUI dialog/worker, CLI, project/export validation, and Cellpose tests. |
 | New project field/file | models, `project.py`, validation, migration, round-trip tests. |
 | New CLI behavior | `cli.py`, command parser, end-to-end project/export test, README if user-visible. |
 
@@ -33,12 +35,20 @@ depending on widget state.
 6. Write the smallest regression test that demonstrates the requested behavior,
    then run focused tests, full tests, and Ruff.
 
+Model-derived output is a cross-cutting result type, not a shortcut around this
+procedure. Preserve native coordinates and domains, `source_run_id` ownership,
+run provenance, and `pending` review state. A change that alters an ONNX pack
+contract or Cellpose settings normally needs core, GUI, CLI, persistence/export,
+and documentation coverage.
+
 ## Tests and commands
 
 ```powershell
 pytest tests/test_particles.py
 pytest tests/test_project_and_cli.py
 pytest tests/test_gui_smoke.py
+pytest tests/test_model_inference.py
+pytest tests/test_cellpose_inference.py
 pytest
 pytest -m large
 ruff check src app tests
@@ -48,7 +58,9 @@ ruff check src app tests
 without a visible display. Use `qtbot` to add widgets and wait for asynchronous
 UI effects. Use `tmp_path` for images/projects/exports and synthetic NumPy/OpenCV
 images for algorithm tests. Add `@pytest.mark.large` only when a test needs
-supplied full-resolution imagery.
+supplied full-resolution imagery. The optional sample-image set has been reduced
+over time; never make the default suite depend on a locally missing `test/img`
+file or commit a generated result as a substitute fixture.
 
 For scientific changes, test both expected results and invariants: no pixels
 outside the domain, correct calibrated units, stable label handling, correct
@@ -80,6 +92,12 @@ serialized with JSON-compatible values, tied to a layer/run where appropriate,
 included in validation, and exported with provenance. Do not silently reuse a
 project after source pixels change: hashes and `relink_source()` intentionally
 invalidate derived results.
+
+For ONNX or Cellpose results, persist the recipe and run, link every generated
+layer (including the domain) in both directions, retain runtime/model metadata,
+and export review status. Retain explicit model-download, licence, and GPU
+availability failures rather than silently falling back to a different model or
+device.
 
 Run `gst-image-cli validate-project <project.gstproj>` after manual project
 testing. For output changes, inspect generated CSV headers, TIFF masks, and

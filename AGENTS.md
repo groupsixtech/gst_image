@@ -9,10 +9,12 @@ repository-wide working conventions.
 `src/gst_image/` contains the Qt-independent domain models, image-processing
 algorithms, project persistence, exports, and CLI. Keep new analysis features in
 `src/gst_image/analysis/` and keep GUI-specific work in `app/gst_image_app/`.
-`tests/` holds unit, integration, and offscreen GUI tests; `test/` contains
-checked-in sample inputs and expected export artifacts. Use `docs/` for user or
-workflow documentation and `bin/` for PowerShell launchers. The legacy Tkinter
-prototype in `temp/` is reference-only.
+`tests/` holds unit, integration, and offscreen GUI tests; `test/` holds only
+optional manually supplied imagery. Recent history deliberately removed bulky
+sample images and generated exports: use synthetic arrays and `tmp_path` test
+outputs by default, and do not commit `.gstproj` results or export directories.
+Use `docs/` for user or workflow documentation and `bin/` for PowerShell
+launchers. The legacy Tkinter prototype in `temp/` is reference-only.
 
 ## Build, Test, and Development Commands
 
@@ -30,6 +32,11 @@ python -m pip install -r requirements-dev.txt
 - `gst-image` launches the PySide6 application; `gst-image-cli --help` lists CLI actions.
 - `python tests/benchmark_large_image.py "test/img/1199_1_stitch.jpg"` runs the documented performance benchmark when that sample is available.
 
+Optional inference dependencies must remain optional: `python -m pip install -e
+".[ml]"` installs CPU ONNX Runtime, while `".[cellpose]"` installs Cellpose.
+Cellpose GPU work also needs a CUDA-compatible PyTorch wheel installed first;
+follow the current README rather than adding GPU dependencies to the base set.
+
 ## Coding Style & Naming Conventions
 
 Target Python 3.12+, use four-space indentation, and keep lines within Ruff's
@@ -46,7 +53,10 @@ Write pytest tests as `tests/test_<feature>.py`, with test functions named
 use `qtbot` for widget behavior. Mark tests needing supplied full-size imagery
 with `@pytest.mark.large`. Run the focused file first, then `pytest` before a
 pull request. No coverage threshold is configured, so add regression tests for
-each fixed defect or changed analysis rule.
+each fixed defect or changed analysis rule. For model-derived results, cover the
+core inference test plus project/CLI round-trip, pending-review/provenance, and
+domain/coordinate behavior (`test_model_inference.py` or
+`test_cellpose_inference.py` as applicable).
 
 ## Commit & Pull Request Guidelines
 
