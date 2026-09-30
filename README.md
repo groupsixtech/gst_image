@@ -174,7 +174,8 @@ pytest
 ```
 
 Thin launchers are also provided under `bin/` for environments where console scripts are
-not on `PATH`.
+not on `PATH`. Use the `.ps1` launchers from PowerShell or the `.bat` launchers from Command
+Prompt; both forms forward any additional command-line arguments.
 
 ## GUI training documentation
 
