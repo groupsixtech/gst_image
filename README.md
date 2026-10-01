@@ -19,14 +19,23 @@ GPU, CUDA, PyTorch, Cellpose, or ONNX Runtime.
 ### Base application
 
 ```powershell
-python -m venv .venv
-.venv\Scripts\Activate.ps1
+python -m venv .gst-image
+.gst-image\Scripts\Activate.ps1
+.gst-image\Scripts\Activate.bat
 python -m pip install --upgrade pip
 python -m pip install -r requirements-dev.txt
 ```
 
 `requirements-lock.txt` records the exact Windows/Python 3.14 environment used for the
 verified release when a fully pinned installation is required.
+
+>[!note]
+> Ensure that Python Scripts is in your environment
+> (i.e. ```%USERPROFILE%\AppData\Roaming\Python\Python314\Scripts\```)
+
+>[!note]
+> Add `gst_image\bin` to your environment PATH
+> 
 
 ### Optional reviewed ONNX model packs (CPU)
 
