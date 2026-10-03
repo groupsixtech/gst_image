@@ -951,11 +951,13 @@ def test_group_statistics_table_totals_and_sorts_by_column(qtbot):
     panel.set_statistics(
         {
             "Coarse": {"count": 3, "count_percent": 30.0, "area_px": 300.0,
-                       "area_fraction": 0.03, "size": {"mean": 9.0, "median": 8.0},
-                       "circularity": {"mean": 0.5}},
+                       "area_fraction": 0.03,
+                       "size": {"mean": 9.0, "median": 8.0, "min": 2.0, "max": 20.0},
+                       "circularity": {"mean": 0.5, "min": 0.2, "max": 0.8}},
             "Fine": {"count": 7, "count_percent": 70.0, "area_px": 100.0,
-                     "area_fraction": 0.01, "size": {"mean": 2.0, "median": 1.5},
-                     "circularity": {"mean": 0.9}},
+                     "area_fraction": 0.01,
+                     "size": {"mean": 2.0, "median": 1.5, "min": 1.0, "max": 3.0},
+                     "circularity": {"mean": 0.9, "min": 0.85, "max": 1.0}},
         }
     )
     table = panel.statistics_table
@@ -969,7 +971,10 @@ def test_group_statistics_table_totals_and_sorts_by_column(qtbot):
         "400",
         "4",
     ]
-    assert [table.item(2, column).text() for column in range(5, 8)] == ["", "", ""]
+    assert [table.item(2, column).text() for column in range(5, 12)] == [""] * 7
+    assert [table.item(0, column).text() for column in range(8, 12)] == [
+        "2", "20", "0.2", "0.8",
+    ]
     assert table.item(2, 0).font().bold()
     assert [table.item(row, 0).text() for row in range(2)] == ["Coarse", "Fine"]
 
@@ -980,3 +985,48 @@ def test_group_statistics_table_totals_and_sorts_by_column(qtbot):
     assert [table.item(row, 0).text() for row in range(3)] == ["Fine", "Coarse", "Total"]
     panel._statistics_header_clicked(3)
     assert [table.item(row, 0).text() for row in range(3)] == ["Fine", "Coarse", "Total"]
+
+    for column, first in [(8, "Fine"), (9, "Fine"), (10, "Coarse"), (11, "Coarse")]:
+        panel._statistics_header_clicked(column)
+        assert table.item(0, 0).text() == first
+        assert table.item(2, 0).text() == "Total"
+    panel.setEnabled(True)
+    panel.copy_statistics_button.click()
+    copied = QApplication.clipboard().text().splitlines()
+    assert copied[0].split("\t")[8:] == [
+        "Min size", "Max size", "Min circularity", "Max circularity",
+    ]
+    assert copied[1].split("\t")[8:] == ["2", "20", "0.2", "0.8"]
+
+    panel.set_statistics({"Empty": {"count": 0}})
+    assert [table.item(0, column).text() for column in range(8, 12)] == [""] * 4
+
+
+def test_copy_particle_data_includes_all_rows_and_headers(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    labels = np.zeros((30, 30), dtype=np.int32)
+    labels[3:8, 3:8] = 1
+    labels[12:22, 12:22] = 2
+    window.particles = measure_particles(labels, None)
+    window._refresh_particles()
+    table = window.particle_table
+    table.selectRow(0)
+
+    window.copy_particles_button.click()
+
+    copied = QApplication.clipboard().text().splitlines()
+    assert len(copied) == 3
+    assert copied[0].split("\t") == [
+        "Label", "Equivalent radius (px)", "Circularity", "Area px²",
+        "Solidity", "Border", "Group",
+    ]
+    for row in range(2):
+        assert copied[row + 1].split("\t") == [
+            table.item(row, column).text() for column in range(table.columnCount())
+        ]
+
+    window.particles = []
+    window._refresh_particles()
+    window.copy_particles_button.click()
+    assert QApplication.clipboard().text() == copied[0]

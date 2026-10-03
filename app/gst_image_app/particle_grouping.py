@@ -196,7 +196,7 @@ class ParticleGroupingPanel(QWidget):
         visual_buttons.addWidget(self.save_image_button)
         layout.addLayout(visual_buttons)
 
-        self.statistics_table = QTableWidget(0, 8)
+        self.statistics_table = QTableWidget(0, 12)
         self.statistics_table.setHorizontalHeaderLabels(
             [
                 "Group",
@@ -207,6 +207,10 @@ class ParticleGroupingPanel(QWidget):
                 "Mean size",
                 "Median size",
                 "Mean circularity",
+                "Min size",
+                "Max size",
+                "Min circularity",
+                "Max circularity",
             ]
         )
         self.statistics_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -287,6 +291,12 @@ class ParticleGroupingPanel(QWidget):
             mean_size = size.get("mean")
             median_size = size.get("median")
             mean_circularity = stats.get("circularity", {}).get("mean")
+            extrema = [
+                size.get("min"),
+                size.get("max"),
+                stats.get("circularity", {}).get("min"),
+                stats.get("circularity", {}).get("max"),
+            ]
             rows.append(
                 (
                     [
@@ -298,6 +308,7 @@ class ParticleGroupingPanel(QWidget):
                         self._format_optional(mean_size),
                         self._format_optional(median_size),
                         self._format_optional(mean_circularity),
+                        *(self._format_optional(value) for value in extrema),
                     ],
                     [
                         name.casefold(),
@@ -308,6 +319,7 @@ class ParticleGroupingPanel(QWidget):
                         mean_size,
                         median_size,
                         mean_circularity,
+                        *extrema,
                     ],
                 )
             )
@@ -318,7 +330,7 @@ class ParticleGroupingPanel(QWidget):
             if area_percent is not None:
                 total_area_percent = (total_area_percent or 0.0) + area_percent
         self._statistics_rows = rows
-        # Means and medians are not additive, so the total row leaves them blank.
+        # Distribution statistics are not additive, so the total row leaves them blank.
         self._statistics_total = (
             [
                 "Total",
@@ -326,9 +338,7 @@ class ParticleGroupingPanel(QWidget):
                 f"{total_count_percent:.3g}",
                 self._format_optional(total_area),
                 self._format_optional(total_area_percent),
-                "",
-                "",
-                "",
+                *([""] * (self.statistics_table.columnCount() - 5)),
             ]
             if rows
             else []

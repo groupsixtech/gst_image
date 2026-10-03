@@ -1185,7 +1185,16 @@ class MainWindow(QMainWindow):
             ["Label", "Size", "Circularity", "Area px²", "Solidity", "Border", "Group"]
         )
         self.particle_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        tabs.addTab(self.particle_table, "Particles")
+        particle_panel = QWidget()
+        particle_layout = QVBoxLayout(particle_panel)
+        particle_layout.addWidget(self.particle_table)
+        self.copy_particles_button = QPushButton("Copy particle data")
+        self.copy_particles_button.setToolTip(
+            "Copy all displayed particle rows and column headers as tab-separated text."
+        )
+        self.copy_particles_button.clicked.connect(self.copy_particle_data)
+        particle_layout.addWidget(self.copy_particles_button)
+        tabs.addTab(particle_panel, "Particles")
         layer_panel = QWidget()
         layer_layout = QVBoxLayout(layer_panel)
         self.layers_list = QListWidget()
@@ -4163,6 +4172,23 @@ class MainWindow(QMainWindow):
                 )
             )
         self.canvas.set_annotations(lines)
+
+    def copy_particle_data(self) -> None:
+        """Copy the complete displayed particle table for pasting into a spreadsheet."""
+        table = self.particle_table
+        lines = ["\t".join(
+            table.horizontalHeaderItem(column).text()
+            for column in range(table.columnCount())
+        )]
+        for row in range(table.rowCount()):
+            lines.append("\t".join(
+                item.text() if (item := table.item(row, column)) is not None else ""
+                for column in range(table.columnCount())
+            ))
+        QApplication.clipboard().setText("\n".join(lines))
+        self.statusBar().showMessage(
+            f"Copied {table.rowCount()} particle row(s) to the clipboard.", 5000
+        )
 
     def _refresh_particles(self) -> None:
         records = (

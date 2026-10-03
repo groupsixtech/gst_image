@@ -73,6 +73,10 @@ counts, and size/circularity distributions. Keep grouping tied to its source
 instance layer, never only a global particle list. The GUI statistics table sorts
 itself (`ParticleGroupingPanel._render_statistics`) rather than using Qt's
 built-in sorting, so its additive Total row can always stay last.
+The table includes minimum and maximum size and circularity from the eligible
+particles in each group. Copy statistics includes these columns. The Particles
+tab's Copy particle data button copies all displayed rows and column headers as
+tab-separated text, respecting the current grouping filter and size units.
 
 GUI analysis scope is implied by the ROIs-list selection, not a separate
 checkbox: exactly one selected Include/Analysis ROI scopes both preview and the
