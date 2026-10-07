@@ -63,8 +63,9 @@ and/or particle layers, plus their domain layer, are linked to one pending-revie
 
 `run_cellpose_inference()` lazy-loads only the stock `cpsam_v2` model. GUI runs
 operate on project Analysis boxes (one selected box, otherwise all boxes), use
-the normal valid domain, restore each crop to source coordinates, and then
-measure labels. It converts OpenCV BGR input to RGB for Cellpose. Preserve the
+the normal valid domain, resize crops to the recipe's Selected ROI resolution,
+restore labels to source dimensions, and then measure with the original calibration.
+It converts OpenCV BGR input to RGB for Cellpose. Preserve the
 explicit first-download permission, CC-BY-NC acknowledgement, GPU availability
 check, and cancellation behavior; a cancelled run must not save a late result.
 See [model inference and review](inference-and-review.md) for the complete
@@ -96,9 +97,10 @@ A `.gstproj` is a directory. `project.json` is the Pydantic `ProjectManifest`;
 is a reduced source preview; `results/` can hold exported analysis. Portable
 projects also copy the source to `source/`.
 
-`PROJECT_SCHEMA_VERSION` is 5. `load_project()` migrates older group data to
+`PROJECT_SCHEMA_VERSION` is 6. `load_project()` migrates older group data to
 layer-scoped `particle_groupings` and initializes optional ONNX/Cellpose inference
-collections; `SegmentationRecipe` independently migrates a
+collections, defaults older Cellpose recipes to 100% resolution, and leaves historical
+input dimensions unrecorded; `SegmentationRecipe` independently migrates a
 legacy one-sided `manual_threshold`. Add a forward migration in `_migrate()` and
 tests whenever changing persisted meaning. `ProjectManifest` forbids unknown
 fields, so schema changes require explicit model updates.

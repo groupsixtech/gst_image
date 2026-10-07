@@ -91,6 +91,12 @@ def _migrate(payload: dict[str, Any]) -> dict[str, Any]:
     if version < 5:
         payload.setdefault("cellpose_inference_recipes", [])
         payload.setdefault("cellpose_inference_runs", [])
+    if version < 6:
+        for recipe in payload.get("cellpose_inference_recipes", []):
+            recipe.setdefault("resolution_percent", 100)
+        for run in payload.get("cellpose_inference_runs", []):
+            run["recipe"].setdefault("resolution_percent", 100)
+            run.setdefault("input_dimensions_px", [])
     # SegmentationRecipe's pre-validator translates legacy manual_threshold values wherever
     # recipes occur, including recipes embedded in run history.
     payload["schema_version"] = PROJECT_SCHEMA_VERSION

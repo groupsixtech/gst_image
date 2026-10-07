@@ -6,9 +6,9 @@ download when the local cache is empty.
 
 Evaluation mirrors the upstream Cellpose application: the stock ``cpsam_v2``
 backbone is called with Cellpose's own defaults for everything the recipe does
-not name, so a region analysed here matches the same region analysed in the
-Cellpose GUI.  Unlike the GUI, inference is confined to the caller's regions
-(the project's Analysis boxes) instead of the whole overview image.
+not name. The recipe can reduce each crop in memory before evaluation; pixel
+tuning settings refer to that reduced input. Inference is confined to the
+caller's regions (the project's Analysis boxes) instead of the whole overview.
 """
 
 from __future__ import annotations
@@ -54,6 +54,7 @@ class CellposeInferenceResult:
     summary: dict[str, float | int | str]
     source_bounds_px: Bounds
     region_bounds_px: list[Bounds]
+    input_dimensions_px: list[tuple[int, int]]
     cellpose_version: str
     torch_version: str
     model_sha256: str
@@ -103,20 +104,32 @@ def run_cellpose_inference(
     )
     eval_kwargs = _eval_kwargs(recipe)
     labels = np.zeros((height, width), dtype=np.int32)
+    input_dimensions: list[tuple[int, int]] = []
     offset = 0
     started = time.perf_counter()
     for index, (left, top, right, bottom) in enumerate(boxes):
         _check_cancelled(cancelled)
+        crop = source[top:bottom, left:right]
+        target = cellpose_input_dimensions(right - left, bottom - top, recipe.resolution_percent)
+        if target != (right - left, bottom - top):
+            crop = cv2.resize(crop, target, interpolation=cv2.INTER_AREA)
+        crop = _cellpose_input(crop)
+        input_dimensions.append(target)
         _report(
             progress,
             _span_fraction(index, len(boxes)),
-            f"Running local Cellpose-SAM v2 on analysis region {index + 1} of {len(boxes)}",
+            f"Running local Cellpose-SAM v2 on analysis region {index + 1} of {len(boxes)} "
+            f"at {recipe.resolution_percent}% ({target[0]} × {target[1]} input px)",
         )
-        crop = _cellpose_input(source[top:bottom, left:right])
         response = active_model.eval(crop, **eval_kwargs)
         # Cellpose does not offer a cancellation callback for eval; never save a late result.
         _check_cancelled(cancelled)
         local = _labels_from_response(response, crop.shape[:2])
+        if target != (right - left, bottom - top):
+            # Restore integer IDs before clipping and measuring in source coordinates.
+            local = cv2.resize(
+                local, (right - left, bottom - top), interpolation=cv2.INTER_NEAREST
+            )
         # Clip per region so post-processing costs scale with the boxes, not the overview.
         local = _clip_and_split_labels(local, domain[top:bottom, left:right])
         peak = int(local.max())
@@ -127,6 +140,7 @@ def run_cellpose_inference(
         offset += peak
     elapsed_seconds = time.perf_counter() - started
     _report(progress, _EVAL_SPAN[1], "Measuring Cellpose instances")
+    # Labels are back in source pixels; adjusting calibration here would double-scale sizes.
     particles = measure_particles(labels, calibration, domain)
     _check_cancelled(cancelled)
     segmented_pixels = int(np.count_nonzero(labels))
@@ -138,7 +152,9 @@ def run_cellpose_inference(
         "device": recipe.device,
         "analysis_regions": len(boxes),
         "analyzed_pixels": analyzed_pixels,
-        "analysis_resolution": "original",
+        "analysis_resolution": "original" if recipe.resolution_percent == 100 else "reduced",
+        "resolution_percent": recipe.resolution_percent,
+        "input_pixels": sum(w * h for w, h in input_dimensions),
         "particle_count": len(particles),
         "segmented_pixels": segmented_pixels,
         "area_fraction": segmented_pixels / analyzed_pixels,
@@ -152,11 +168,18 @@ def run_cellpose_inference(
         summary=summary,
         source_bounds_px=_union(boxes),
         region_bounds_px=list(boxes),
+        input_dimensions_px=input_dimensions,
         cellpose_version=_distribution_version("cellpose"),
         torch_version=_torch_version(),
         model_sha256=_sha256_file(resolved_path) if resolved_path.is_file() else "not-recorded",
         model_cache_path=str(resolved_path),
     )
+
+
+def cellpose_input_dimensions(width: int, height: int, resolution_percent: int) -> tuple[int, int]:
+    """Return model-input width and height, also used for GUI estimates."""
+    scale = resolution_percent / 100
+    return max(1, round(width * scale)), max(1, round(height * scale))
 
 
 def _eval_kwargs(recipe: CellposeInferenceRecipe) -> dict[str, Any]:

@@ -81,13 +81,15 @@ tab-separated text, respecting the current grouping filter and size units.
 GUI analysis scope is implied by the ROIs-list selection, not a separate
 checkbox: exactly one selected Include/Analysis ROI scopes both preview and the
 final run to that box. Overview/Selected-ROI resolution percentages affect
-display, preview, and region-classification feature extraction only; the final
+display, preview, and region-classification feature extraction; the final
 particle run always reads original-resolution pixels.
 
 Cellpose has deliberately different scope semantics: it has no overview run and
 uses only Analysis boxes. One selected Analysis box runs alone; otherwise it
-runs all of them, clips results to the valid domain, and restores native source
-coordinates. ONNX-pack and Cellpose layers stay pending review until a reviewer
+runs all of them at Selected ROI resolution (1–100%). It restores labels to native
+source dimensions before domain clipping and measurement, preserving the original
+calibration. Diameter/minimum mask area are input-pixel settings and do not scale
+automatically. ONNX-pack and Cellpose layers stay pending review until a reviewer
 confirms their run. Their integration details and limits are in
 [model inference and review](inference-and-review.md).
 

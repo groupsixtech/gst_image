@@ -38,9 +38,15 @@ download must be explicitly allowed. The recipe records CC-BY-NC acceptance.
   imports a fine-tuned Cellpose model. Custom training stays in upstream
   Cellpose until an explicit product contract supports importing it.
 - GUI runs require Analysis boxes: one selected box is the scope, otherwise all
-  Analysis boxes are processed. Inference uses original-resolution crops, turns
-  OpenCV BGR into RGB, returns labels to source coordinates, clips them to the
-  valid domain, and splits disconnected fragments before measurement.
+  Analysis boxes are processed. The recipe captures Selected ROI resolution
+  (1–100%, default 100; 0% is rejected). Crops are resized with area interpolation,
+  OpenCV BGR is converted to RGB, and integer labels are restored to exact source
+  crop dimensions with nearest-neighbor interpolation before domain clipping,
+  fragment splitting, and measurement with the unchanged source calibration.
+  Diameter and minimum mask area remain numeric input-pixel settings; do not
+  scale diameter automatically because Cellpose's internal resizing can undo the
+  CPU savings. Run provenance records actual per-region input width/height and
+  total input pixels, while bounds and summary denominators stay in source pixels.
 - `CellposeInferenceRecipe` defaults to CPU; the GUI may select NVIDIA GPU when
   PyTorch exposes one. A GPU recipe must call the CUDA availability check and
   fail clearly when unavailable; it must never quietly run on CPU. A
@@ -60,8 +66,10 @@ Both inference paths create result layers and a matching domain layer linked by
 start `pending`; confirmation records a reviewer and confirms every layer from
 that run. `confirm-model-run` supports both run types.
 
-Project schema 4 introduced ONNX collections and schema 5 introduced Cellpose
-collections; `project._migrate()` must preserve old-project meaning when these
+Project schema 4 introduced ONNX collections, schema 5 introduced Cellpose
+collections, and schema 6 adds Cellpose resolution and input dimensions. Migration
+defaults old standalone and run-embedded recipes to 100% and leaves unknown input
+dimensions empty. `project._migrate()` must preserve old-project meaning when these
 contracts change. `validate_project()` checks run/layer ownership. Exports must
 include model recipes, run provenance (including review status), and correct
 domain denominators for model-derived particle summaries.

@@ -16,7 +16,7 @@ pixels, even when the displayed overview is scaled.
 | **Export…** (`Ctrl+E`) | Writes masks, tables, recipe/provenance JSON, fractions, native ROI source crops, per-layer segmentation images, and grouping overlays to a chosen folder. | Delivering data outside GST Image. |
 | **Quit** | Closes the application. | After saving work. |
 | **Analysis > Preview** (`Shift+A`) | Same as the Analysis panel’s Preview button. | Quickly retesting after a small adjustment. |
-| **Run Cellpose-SAM v2…** | Runs the local stock Cellpose-SAM model at native resolution inside Analysis boxes and saves a pending-review instance layer. | You need Cellpose-style individual-cell or particle instances and have reviewed the [Cellpose guide](cellpose.md), including its CC-BY-NC and scope requirements. |
+| **Run Cellpose-SAM v2…** | Runs the local stock Cellpose-SAM model at Selected ROI resolution inside Analysis boxes, restores source coordinates for calibrated measurement, and saves a pending-review instance layer. | You need Cellpose-style individual-cell or particle instances and have reviewed the [Cellpose guide](cellpose.md), including its CC-BY-NC and scope requirements. |
 
 **Edit > Undo/Redo** reverses or reapplies eligible manual paint edits. **Decrease brush radius**
 (`[`), **Increase brush radius** (`]`) adjust a brush when a brush-like tool is active.

@@ -23,6 +23,7 @@ from gst_image.analysis.particles import measure_particles
 from gst_image.models import (
     ROI,
     Calibration,
+    CellposeInferenceRecipe,
     ParticleGroup,
     ParticleGrouping,
     Point,
@@ -881,6 +882,92 @@ def test_cellpose_dialog_lists_every_analysis_box_it_will_segment(qtbot, tmp_pat
     assert widget.count() == 2
     assert widget.item(0).text().startswith("Large — 21 × 17 px at (10, 8)")
     assert widget.item(1).text().startswith("Small — 5 × 5 px at (2, 2)")
+    window._set_dirty(False)
+
+
+def test_cellpose_dialog_captures_resolution_and_shows_estimated_input(qtbot, tmp_path, monkeypatch):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_new_image(_source(tmp_path))
+    window.roi_resolution.setValue(50)
+    monkeypatch.setattr(mainwindow_module, "_cuda_is_available", lambda: False)
+    captured = []
+
+    class Accepted(mainwindow_module.QDialog):
+        def exec(self):
+            captured.extend(label.text() for label in self.findChildren(mainwindow_module.QLabel))
+            # A later control change must not alter the settings shown for this run.
+            window.roi_resolution.setValue(25)
+            return mainwindow_module.QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(mainwindow_module, "QDialog", Accepted)
+    widget = window._cellpose_scope_list([_rectangle()])
+    assert "approximately 10 × 8 input px at 50%" in widget.item(0).text()
+    recipe = window._cellpose_recipe_dialog([_rectangle()])
+    assert recipe.resolution_percent == 50
+    assert recipe.diameter_px == 46
+    assert recipe.min_size_px == 15
+    assert any("50% Selected ROI resolution" in text for text in captured)
+    window._set_dirty(False)
+
+
+def test_cellpose_zero_resolution_does_not_start_worker(qtbot, tmp_path, monkeypatch):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_new_image(_source(tmp_path))
+    window.manifest.rois.append(_rectangle())
+    window._refresh_rois()
+    window.roi_resolution.setValue(0)
+    messages = []
+    monkeypatch.setattr(
+        mainwindow_module.QMessageBox, "information",
+        lambda parent, title, message: messages.append(message),
+    )
+    window.run_cellpose_inference_dialog()
+    assert window.worker is None
+    assert len(messages) == 1
+    assert "above 0%" in messages[0]
+    window._set_dirty(False)
+
+
+def test_cellpose_gui_worker_and_result_preserve_reduced_provenance(qtbot, tmp_path, monkeypatch):
+    from gst_image.analysis.cellpose_inference import run_cellpose_inference
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    path = _source(tmp_path)
+    window._load_new_image(path)
+    roi = _rectangle()
+    window.manifest.rois.append(roi)
+    window.manifest.calibration = Calibration(mm_per_pixel=0.1)
+    window.run_scope_ids = [roi.id]
+
+    class Model:
+        pretrained_model = str(tmp_path / "weights")
+
+        def eval(self, image, **kwargs):
+            assert image.shape == (8, 10, 3)
+            return (np.ones(image.shape[:2], np.int32),)
+
+    monkeypatch.setattr(
+        mainwindow_module, "run_cellpose_inference",
+        lambda *args, **kwargs: run_cellpose_inference(*args, model=Model(), **kwargs),
+    )
+    monkeypatch.setattr(
+        mainwindow_module, "suggest_specimen_mask", lambda gray: np.ones(gray.shape, bool)
+    )
+    recipe = CellposeInferenceRecipe(resolution_percent=50, noncommercial_license_accepted=True)
+    payload = mainwindow_module._analyze_cellpose_source(
+        path, [roi], [roi.id], recipe, window.manifest.calibration, False,
+        progress=lambda *args: None, cancelled=lambda: False,
+    )
+    window._cellpose_inference_result(payload)
+    run = window.manifest.cellpose_inference_runs[0]
+    assert run.input_dimensions_px == [(10, 8)]
+    assert run.recipe.resolution_percent == 50
+    assert run.review_status == "pending"
+    assert all(layer.source_run_id == run.id for layer in window.manifest.layers)
+    assert window.particles[0].area_mm2 == pytest.approx(21 * 17 * 0.1**2)
     window._set_dirty(False)
 
 

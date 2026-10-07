@@ -12,7 +12,7 @@ from typing import Any, Literal
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-PROJECT_SCHEMA_VERSION = 5
+PROJECT_SCHEMA_VERSION = 6
 
 
 def _id() -> str:
@@ -278,6 +278,7 @@ class CellposeInferenceRecipe(BaseModel):
     model_id: Literal["cpsam_v2"] = "cpsam_v2"
     modality: Literal["biological", "metallography"] = "biological"
     device: Literal["cpu", "gpu"] = "cpu"
+    resolution_percent: int = Field(default=100, ge=1, le=100)
     diameter_px: float | None = Field(default=None, gt=0)
     cellprob_threshold: float = Field(default=0.0, ge=-10, le=10)
     flow_threshold: float = Field(default=0.4, gt=0, le=10)
@@ -296,6 +297,8 @@ class CellposeInferenceRun(BaseModel):
     summary: dict[str, Any] = Field(default_factory=dict)
     source_bounds_px: tuple[int, int, int, int] | None = None
     region_bounds_px: list[tuple[int, int, int, int]] = Field(default_factory=list)
+    # Width, height of each actual model input, in region_bounds_px order.
+    input_dimensions_px: list[tuple[int, int]] = Field(default_factory=list)
     cellpose_version: str = "not-recorded"
     torch_version: str = "not-recorded"
     model_sha256: str = "not-recorded"

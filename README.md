@@ -278,8 +278,12 @@ validated ONNX-pack integration. See the [Cellpose-SAM usage, tuning, and traini
    to select one Analysis box, paint and erase example strokes for Weld, HAZ, Base, or custom
    classes, and train the classifier only within that box at the Selected ROI resolution.
 8. For biological cells or experimental metallography particles, follow the
-   [Cellpose-SAM guide](docs/cellpose.md): draw Analysis boxes, run the local stock model at native
-   resolution, tune its instance settings, and confirm the reviewed result. GST Image's Cellpose
+   [Cellpose-SAM guide](docs/cellpose.md): draw Analysis boxes, run the local stock model at
+   **Selected ROI resolution**, tune its instance settings, and confirm the reviewed result.
+   Lower this setting to reduce CPU inference work (50% gives about one-quarter of the input
+   pixels). Labels are restored to source dimensions before measurement, preserving calibration;
+   smaller features and boundary detail may be lost. Diameter and minimum mask area are in
+   inference-image pixels. GST Image's Cellpose
    integration is inference-only; custom-model training remains an external Cellpose workflow.
 9. Save the project and export masks, native ROI source images, per-layer segmentation overlays,
    measurements, fractions, particle CSVs, saved grouping definitions, particle assignments,
@@ -350,7 +354,7 @@ particle area fractions retain their foreground/background meaning.
 ```powershell
 gst-image-cli analyze test/img/example.jpg --output analysis.gstproj --mm-per-pixel 0.001
 gst-image-cli batch test/img --output test-output --recipe recipe.json --calibration-csv scales.csv
-gst-image-cli infer-cellpose input.tif --output cellpose-result.gstproj --modality biological --device cpu --accept-cellpose-noncommercial-license --allow-model-download
+gst-image-cli infer-cellpose input.tif --output cellpose-result.gstproj --modality biological --device cpu --resolution-percent 50 --accept-cellpose-noncommercial-license --allow-model-download
 gst-image-cli export analysis.gstproj --output exported
 gst-image-cli validate-project analysis.gstproj
 ```

@@ -53,9 +53,10 @@ than silently changing to CPU. Windows AMD/ROCm acceleration is not supported by
    Cellpose has no preview mode in GST Image and never runs over the unboxed overview.
 2. Add **Exclude boxes** over scale bars, text, seams, and other invalid content. The specimen mask
    and exclusions still limit the final analysis domain.
-3. Click **Run Cellpose-SAM v2...** in the Analysis panel. The dialog lists every Analysis box it
-   will process, largest first, including its native pixel dimensions and origin. Check that list
-   before proceeding.
+3. Set **Selected ROI resolution** to 1–100%, then click **Run Cellpose-SAM v2...** in the
+   Analysis panel. The dialog lists every Analysis box it will process, largest first, including
+   source dimensions, origin, and estimated input dimensions at the selected percentage. Check
+   that list before proceeding. The setting applies to CPU and GPU runs; 0% cannot start a run.
 4. Select the result type and device, enter an initial diameter, and leave the other controls at
    their defaults for the first comparison. If exactly one Analysis box is selected in the ROIs
    list, only that box is run; otherwise all Analysis boxes are run.
@@ -68,21 +69,33 @@ than silently changing to CPU. Windows AMD/ROCm acceleration is not supported by
    the overlay, scope, count, area fraction, and size distribution are acceptable. Save the
    project and retain its exported provenance with reported measurements.
 
-Each Analysis box is passed to Cellpose as a separate native-resolution crop and restored to
-source coordinates. Overlapping boxes are fused before inference so an object is not segmented
+Each Analysis box is resized in memory to the selected percentage of its width and height before
+being passed to Cellpose. Overlapping boxes are fused before inference so an object is not segmented
 twice at a shared edge. After inference GST Image clips labels to the valid domain and splits any
 disconnected fragments before measurement. Thus `analyzed_pixels` is only the valid pixels inside
 the processed boxes, not the entire overview.
 
+At 50%, input crops contain approximately one-quarter as many pixels; actual speed gains depend
+on Cellpose's internal processing. No reduced image file is needed. Progress reports the actual
+model-input dimensions after domain clipping and overlap merging. Source loading, domain
+construction, and final measurement still use source resolution.
+
+Labels are restored to the exact source crop dimensions using nearest-neighbor interpolation
+before clipping and measurement. The original calibration therefore remains correct: neither the
+project calibration nor measured sizes need another scale correction. For example, one input pixel
+at 50% covers approximately 2 × 2 source pixels. Reduced resolution can lose small particles and
+boundary detail; restoring labels preserves physical units, not the discarded detail.
+
 ## Command-line usage
 
-`infer-cellpose` creates a new pending-review `.gstproj`. Unlike the GUI, it has no project ROIs:
+`infer-cellpose` creates a new pending-review `.gstproj`. `--resolution-percent` accepts an integer
+from 1–100 and defaults to 100. Unlike the GUI, it has no project ROIs:
 it runs against the whole image after GST Image's specimen-domain suggestion. Use the GUI when the
 scope needs hand-drawn Analysis or Exclude boxes.
 
 ```powershell
 gst-image-cli infer-cellpose input.tif --output cellpose-result.gstproj `
-  --modality biological --device cpu --diameter 30 `
+  --modality biological --device cpu --resolution-percent 50 --diameter 30 `
   --accept-cellpose-noncommercial-license --allow-model-download
 ```
 
@@ -98,24 +111,24 @@ three channels to the model.
 
 | Control | Default | Effect and tuning direction |
 | --- | --- | --- |
-| **Diameter (px)** | GUI: 46; CLI: unset | Typical object diameter at the **native source resolution**. Cellpose rescales by `30 / diameter`. Use `0` in the GUI or omit `--diameter` in the CLI to leave Cellpose's default in control. Increase it when the native objects are larger than the scale that segmented well; decrease it when they are smaller. |
+| **Diameter (input px)** | GUI: 46; CLI: unset | Diameter in the **inference image after ROI resizing**. Cellpose rescales internally by `30 / diameter`. Use `0` in the GUI or omit `--diameter` in the CLI to leave Cellpose's default in control. The value is not automatically scaled with ROI resolution. |
 | **Cell probability threshold** | `0.0` | Pixels above this model score form candidate objects. Lower it to recover missed, weak objects; raise it to suppress false positives in dim or ambiguous background. |
 | **Flow threshold** | `0.4` | Maximum permitted disagreement between a recovered object's flows and model-predicted flows. Raise it when valid objects are rejected; lower it when unstable or implausible shapes are accepted. |
-| **Minimum mask size (px)** | `15` | Removes tiny masks after inference. Use it only for features below the measurement definition, not as the primary way to hide widespread false positives. |
+| **Minimum mask area (input px²)** | `15` | Removes masks smaller than this area in the inference image. The value is not automatically scaled with ROI resolution. |
 | **Tile overlap** | `0.1` | Overlap used while Cellpose evaluates tiled input. Keep the default initially; change only after verifying a repeatable tile-boundary issue. |
 
-Cellpose-SAM is fairly size tolerant, but its default scale is centred near 30 px. GST Image's GUI
-uses 46 px as its initial diameter because its native stitched-metallograph test crop was 1/0.645
-larger than a downscaled crop that worked at 30 px. That is an initial metallography convenience,
-not a universal physical size. If a downscaled image at scale `s` segmented correctly in Cellpose,
-try `30 / s` for the same native source crop. For example, a 0.645x export suggests `30 / 0.645`,
-or about 46 px. Verify the proposed diameter on representative small, typical, large, touching,
-and difficult objects before reporting values.
+GST Image retains the GUI's initial diameter of 46 input pixels as a tuning starting point,
+not a universal physical size. Lowering ROI resolution keeps that numeric value unchanged to
+favor CPU savings. Automatically shrinking diameter as well would cause Cellpose to enlarge the
+image internally and could counteract those savings. Tune diameter and minimum mask area at the
+chosen resolution; these settings do not define the physical calibration. If a reduced export
+worked well in upstream Cellpose, use the same percentage and input-pixel settings here. Verify
+representative small, typical, large, touching, and difficult objects before reporting values.
 
 ## A defensible tuning and review loop
 
 1. Start with one clean, representative Analysis box and the default probability, flow, size, and
-   overlap settings. Set diameter from an observed object size in native pixels.
+   overlap settings. Tune diameter in input pixels at the selected resolution.
 2. Compare the same checkpoints after each single change: typical objects, smallest reportable
    objects, largest objects, touching objects, lighting extremes, and exclusion boundaries.
 3. Correct the parameter that matches the failure: scale for systematic size mismatch, cell
@@ -127,7 +140,9 @@ and difficult objects before reporting values.
    but affect size statistics as border-touching particles.
 5. Export the masks, `recipes.json`, `provenance.json`, and summary together. GST Image records
    the Cellpose and Torch versions, settings, model-cache path and SHA-256 when available,
-   analysed bounds, timing, licence acknowledgement, and reviewer status.
+   analysed source bounds, requested resolution percentage, actual input dimensions (width,
+   height) per region, total input pixels, timing, licence acknowledgement, and reviewer status.
+   Historical projects load at 100% with unavailable input dimensions left unrecorded.
 
 ## Custom Cellpose training outside GST Image
 

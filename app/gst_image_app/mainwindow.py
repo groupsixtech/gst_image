@@ -65,6 +65,7 @@ from gst_image.analysis import (
     segment_particles,
     suggest_specimen_mask,
 )
+from gst_image.analysis.cellpose_inference import cellpose_input_dimensions
 from gst_image.analysis.groups import ParticleGroupingResult
 from gst_image.analysis.particles import merge_particle_labels, split_particle_by_line
 from gst_image.analysis.preprocess import to_gray
@@ -163,7 +164,7 @@ def _analyze_cellpose_source(
     progress,
     cancelled,
 ):
-    """Run local Cellpose at source resolution inside the Analysis boxes only."""
+    """Run local Cellpose at the recipe's resolution inside the Analysis boxes only."""
     source = load_image(path, color=True)
     gray = cv2.cvtColor(source, cv2.COLOR_BGR2GRAY)
     progress(0.01, "Building Cellpose analysis domain")
@@ -837,7 +838,7 @@ class MainWindow(QMainWindow):
         self.roi_resolution.setValue(100)
         self.roi_resolution.setToolTip(
             "Display and preview resolution for the selected Include/Analysis ROI, also "
-            "used by region classification. Run particles always analyzes the original "
+            "used by region classification and Cellpose. Run particles analyzes the original "
             "resolution."
         )
         self.eyedropper_target = QComboBox()
@@ -1161,7 +1162,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.run_model_button)
         self.run_cellpose_button = QPushButton("Run Cellpose-SAM v2…")
         self.run_cellpose_button.setToolTip(
-            "Runs local stock Cellpose-SAM v2 at native resolution. The first weight download is explicit."
+            "Runs local stock Cellpose-SAM v2 at Selected ROI resolution inside Analysis boxes."
         )
         self.run_cellpose_button.clicked.connect(self.run_cellpose_inference_dialog)
         layout.addWidget(self.run_cellpose_button)
@@ -2087,6 +2088,14 @@ class MainWindow(QMainWindow):
         self.thread_pool.start(self.worker)
 
     def _cellpose_recipe_dialog(self, targets: list[ROI]) -> CellposeInferenceRecipe | None:
+        resolution = self.roi_resolution.value()
+        if resolution == 0:
+            QMessageBox.information(
+                self,
+                "Selected ROI resolution",
+                "Choose a Selected ROI resolution above 0% before running Cellpose.",
+            )
+            return None
         dialog = QDialog(self)
         dialog.setWindowTitle("Run local Cellpose-SAM v2")
         layout = QVBoxLayout(dialog)
@@ -2098,12 +2107,13 @@ class MainWindow(QMainWindow):
         intro.setWordWrap(True)
         layout.addWidget(intro)
         scope = QLabel(
-            f"Scope — {len(targets)} Analysis box{'es' if len(targets) != 1 else ''} at native "
-            "resolution. The rest of the overview is never sent to the model."
+            f"Scope — {len(targets)} Analysis box{'es' if len(targets) != 1 else ''} at "
+            f"{resolution}% Selected ROI resolution. Input sizes below are estimates before "
+            "domain clipping and overlap merging. Measurements retain the source calibration."
         )
         scope.setWordWrap(True)
         layout.addWidget(scope)
-        layout.addWidget(self._cellpose_scope_list(targets))
+        layout.addWidget(self._cellpose_scope_list(targets, resolution))
         form = QFormLayout()
         modality = QComboBox()
         modality.addItem("Biological cells", "biological")
@@ -2127,12 +2137,12 @@ class MainWindow(QMainWindow):
         # Native-resolution Analysis boxes on stitched metallographs run ~46 px particles.
         diameter.setValue(46)
         diameter.setToolTip(
-            "Typical particle diameter in source pixels. Cellpose-SAM rescales the region by "
-            "30 / diameter, so the default treats particles as ~30 px and under-segments larger "
-            "ones. If a downscaled export segments better in the Cellpose app, set this to 30 "
-            "divided by that export's scale."
+            "Diameter in pixels of the image sent to Cellpose after ROI resizing. Cellpose "
+            "rescales internally by 30 / diameter. This value is not automatically reduced "
+            "with ROI resolution; tune it at the selected resolution. Physical measurements "
+            "use the original source calibration."
         )
-        form.addRow("Diameter (px)", diameter)
+        form.addRow("Diameter (input px)", diameter)
         cellprob = QDoubleSpinBox()
         cellprob.setRange(-10, 10)
         cellprob.setDecimals(2)
@@ -2146,7 +2156,8 @@ class MainWindow(QMainWindow):
         min_size = QSpinBox()
         min_size.setRange(0, 10_000_000)
         min_size.setValue(15)
-        form.addRow("Minimum mask size (px)", min_size)
+        min_size.setToolTip("Minimum mask area in pixels of the reduced inference image.")
+        form.addRow("Minimum mask area (input px²)", min_size)
         overlap = QDoubleSpinBox()
         overlap.setRange(0, 0.95)
         overlap.setSingleStep(0.05)
@@ -2163,6 +2174,7 @@ class MainWindow(QMainWindow):
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return None
         return CellposeInferenceRecipe(
+            resolution_percent=resolution,
             modality=modality.currentData(),
             device=device.currentData(),
             diameter_px=diameter.value() or None,
@@ -2173,20 +2185,29 @@ class MainWindow(QMainWindow):
             noncommercial_license_accepted=True,
         )
 
-    def _cellpose_scope_list(self, targets: list[ROI]) -> QListWidget:
+    def _cellpose_scope_list(
+        self, targets: list[ROI], resolution: int | None = None
+    ) -> QListWidget:
         """Show exactly which Analysis boxes this run will segment, largest first."""
         widget = QListWidget()
         widget.setSelectionMode(QListWidget.SelectionMode.NoSelection)
         widget.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        widget.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         rows = []
+        if resolution is None:
+            resolution = self.roi_resolution.value()
         for roi in targets:
             left, top, right, bottom = self._roi_bounds(roi)
             rows.append(((right - left) * (bottom - top), roi.name, left, top, right, bottom))
         for pixels, name, left, top, right, bottom in sorted(rows, reverse=True):
+            width, height = cellpose_input_dimensions(right - left, bottom - top, resolution)
             item = QListWidgetItem(
                 f"{name} — {right - left} × {bottom - top} px at ({left}, {top}), "
-                f"{pixels / 1e6:.2f} Mpx"
+                f"{pixels / 1e6:.2f} Mpx\n"
+                f"Estimated input: approximately {width} × {height} input px "
+                f"at {resolution}%"
             )
+            item.setToolTip(item.text())
             item.setFlags(Qt.ItemFlag.ItemIsEnabled)
             widget.addItem(item)
         # Fit up to five rows at the theme's own row height, then scroll.
@@ -2248,7 +2269,7 @@ class MainWindow(QMainWindow):
         boxes = len(targets)
         self.preview_status.setText(
             f"Running local Cellpose-SAM v2 on {boxes} Analysis box{'es' if boxes != 1 else ''} "
-            "at original source resolution"
+            f"at {recipe.resolution_percent}% Selected ROI resolution"
         )
         self.thread_pool.start(self.worker)
 
@@ -2276,6 +2297,7 @@ class MainWindow(QMainWindow):
             summary=result.summary,
             source_bounds_px=result.source_bounds_px,
             region_bounds_px=result.region_bounds_px,
+            input_dimensions_px=result.input_dimensions_px,
             cellpose_version=result.cellpose_version,
             torch_version=result.torch_version,
             model_sha256=result.model_sha256,

@@ -379,6 +379,7 @@ def infer_cellpose_image(
         summary=result.summary,
         source_bounds_px=result.source_bounds_px,
         region_bounds_px=result.region_bounds_px,
+        input_dimensions_px=result.input_dimensions_px,
         cellpose_version=result.cellpose_version,
         torch_version=result.torch_version,
         model_sha256=result.model_sha256,
@@ -404,6 +405,7 @@ def _cmd_infer_cellpose(args: argparse.Namespace) -> int:
             "Cellpose-SAM v2 is CC-BY-NC; pass --accept-cellpose-noncommercial-license to proceed"
         )
     recipe = CellposeInferenceRecipe(
+        resolution_percent=args.resolution_percent,
         modality=args.modality,
         device=args.device,
         diameter_px=args.diameter,
@@ -479,10 +481,16 @@ def build_parser() -> argparse.ArgumentParser:
     infer_cellpose.add_argument("--modality", choices=("biological", "metallography"), default="biological")
     infer_cellpose.add_argument("--device", choices=("cpu", "gpu"), default="cpu")
     infer_cellpose.add_argument("--mm-per-pixel", type=float)
-    infer_cellpose.add_argument("--diameter", type=float)
+    infer_cellpose.add_argument(
+        "--resolution-percent", type=int, default=100,
+        help="Cellpose input width/height percentage (1–100; default: 100)",
+    )
+    infer_cellpose.add_argument("--diameter", type=float, help="Diameter in inference-image pixels")
     infer_cellpose.add_argument("--cellprob-threshold", type=float, default=0.0)
     infer_cellpose.add_argument("--flow-threshold", type=float, default=0.4)
-    infer_cellpose.add_argument("--min-size", type=int, default=15)
+    infer_cellpose.add_argument(
+        "--min-size", type=int, default=15, help="Minimum mask area in inference-image pixels"
+    )
     infer_cellpose.add_argument("--tile-overlap", type=float, default=0.1)
     infer_cellpose.add_argument("--allow-model-download", action="store_true")
     infer_cellpose.add_argument("--accept-cellpose-noncommercial-license", action="store_true")
