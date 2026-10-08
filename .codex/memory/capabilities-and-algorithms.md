@@ -73,10 +73,18 @@ counts, and size/circularity distributions. Keep grouping tied to its source
 instance layer, never only a global particle list. The GUI statistics table sorts
 itself (`ParticleGroupingPanel._render_statistics`) rather than using Qt's
 built-in sorting, so its additive Total row can always stay last.
+The GUI previews the loaded or default grouping immediately when particle results
+arrive, including Cellpose results, without requiring a range edit or saving a
+scheme. Metric range controls retain exact bounds separately from rounded numeric
+fields so full-range grouping and filtering include measured extrema.
 The table includes minimum and maximum size and circularity from the eligible
 particles in each group. Copy statistics includes these columns. The Particles
 tab's Copy particle data button copies all displayed rows and column headers as
 tab-separated text, respecting the current grouping filter and size units.
+Selecting a Particles row highlights its instance in magenta with a white outline
+in a separate canvas overlay. Mouse/keyboard selection uses layer ID and label,
+remains aligned in cropped/scaled views, and clears when filtering removes the
+record or the active layer changes; saved masks and grouping colours are unchanged.
 
 GUI analysis scope is implied by the ROIs-list selection, not a separate
 checkbox: exactly one selected Include/Analysis ROI scopes both preview and the
@@ -111,6 +119,40 @@ confirms their run. Their integration details and limits are in
 | ONNX Runtime (optional) | Validated local ONNX packs only; the current application explicitly uses its CPU execution provider. |
 | Cellpose (optional) | Local stock Cellpose-SAM v2 labelled-instance inference; weights are explicitly downloaded to Cellpose's cache and require a CC-BY-NC acknowledgement. |
 | PyTorch (optional) | Required by Cellpose; a matching CUDA build is needed before the NVIDIA GPU Cellpose option can run. |
+
+## Weld dilution
+
+**Analysis → Weld Dilution** fits a straight coupon surface from two or more
+source-coordinate points. The tangent orientation is canonical; an explicit
+normal-side flip identifies substrate. Tiled segmentation uses an explicit
+4-sigma Gaussian kernel followed by adaptive Gaussian or Sauvola thresholding;
+the halo includes all sequential neighborhood support. Holes are filled after
+tile assembly, domain exclusions reapplied, and candidate components explicitly
+selected by the operator. Envelope painting/polygons never create particles.
+The separate **Gaussian blur → Preview blur** operation performs native tiled
+smoothing without thresholding or altering masks. The GUI retains native blur
+pixels and offers a clicked 512-pixel detail view at 1:1; fit-to-panorama blur can
+otherwise be subpixel on screen. `WeldBlurStroke` recipes store native coordinates,
+radius and sigma. Local strokes apply max(global sigma, last overlapping stroke
+sigma) from the original channel, with source-coordinate capsule masks and enough
+tile halo for the largest sigma. Brush Undo/Redo invalidates segmentation and
+refreshes the preview; CLI resegmentation reproduces these preprocessing strokes.
+Channel/sigma edits invalidate that preview; threshold controls preserve it.
+**Preview segmentation** independently generates provisional candidates. Both
+operations use cancellable workers and discard superseded results.
+
+Cross-sectional dilution is penetration area divided by complete envelope area.
+Line-crossing pixel cells split proportionally using the CDF of two uniforms.
+Tie-lines intersect native unit pixel cells exactly along the surface normal.
+Clipped, multiple, no-contact and no-weld stations are flagged and omitted from
+length statistics; genuine zeros remain. Sampling does not affect area dilution.
+Calibrated areas use mm²; optional volume uses area times weld length and is
+explicitly labeled as a constant-cross-section estimate. See
+`docs/weld-dilution.md` for review, units, exported files, replay, and limitations.
+
+Tests: `test_weld_dilution.py`, `test_weld_dilution_gui.py`; manual capacity check:
+`tests/benchmark_weld_dilution.py`. The 157 MP benchmark is documented in
+`BENCHMARKS.md` and is not segmentation-accuracy validation.
 
 ## Evaluation and exports
 

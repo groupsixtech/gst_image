@@ -97,6 +97,9 @@ def _migrate(payload: dict[str, Any]) -> dict[str, Any]:
         for run in payload.get("cellpose_inference_runs", []):
             run["recipe"].setdefault("resolution_percent", 100)
             run.setdefault("input_dimensions_px", [])
+    if version < 7:
+        payload.setdefault("dilution_drafts", [])
+        payload.setdefault("dilution_runs", [])
     # SegmentationRecipe's pre-validator translates legacy manual_threshold values wherever
     # recipes occur, including recipes embedded in run history.
     payload["schema_version"] = PROJECT_SCHEMA_VERSION
@@ -234,6 +237,40 @@ def validate_project(path: str | Path, *, verify_hash: bool = True) -> list[str]
                 issues.append(
                     f"Model inference run {run.id} does not own layer {layer.name!r}"
                 )
+    dilution_runs = {run.id: run for run in manifest.dilution_runs}
+    layers = {layer.id: layer for layer in manifest.layers}
+    for run in dilution_runs.values():
+        if set(run.layer_ids) != {run.envelope_layer_id, run.domain_layer_id}:
+            issues.append(f"Dilution run {run.id} has inconsistent layer ownership")
+        for layer_id, kind in ((run.envelope_layer_id, "weld_envelope"),
+                               (run.domain_layer_id, "weld_domain")):
+            layer = layers.get(layer_id)
+            if layer is None or layer.source_run_id != run.id or layer.kind != kind:
+                issues.append(f"Dilution run {run.id} has a missing or invalid {kind} layer")
+            elif not layer.mask_path:
+                issues.append(f"Dilution run {run.id} has no saved {kind} mask")
+            elif (root / layer.mask_path).exists():
+                try:
+                    with tifffile.TiffFile(root / layer.mask_path) as mask_file:
+                        if mask_file.series[0].shape != (manifest.image_height, manifest.image_width):
+                            issues.append(f"Dilution run {run.id} {kind} dimensions do not match source")
+                except (OSError, ValueError, IndexError) as error:
+                    issues.append(f"Cannot read dilution mask {layer.mask_path}: {error}")
+            if layer and layer.scope_roi_ids != run.scope_roi_ids:
+                issues.append(f"Dilution run {run.id} and {kind} have different scopes")
+        if run.source_sha256 != manifest.source_sha256 or run.source_revision != manifest.source_revision:
+            issues.append(f"Dilution run {run.id} belongs to a different source revision")
+    for layer in manifest.layers:
+        if layer.kind.startswith("weld_") and layer.source_run_id:
+            run = dilution_runs.get(layer.source_run_id)
+            if run is None or layer.id not in run.layer_ids:
+                issues.append(f"Dilution layer {layer.id} has a broken run reference")
+    for draft in manifest.dilution_drafts:
+        for layer_id in (draft.envelope_layer_id, draft.domain_layer_id):
+            if layer_id and layer_id not in layers:
+                issues.append(f"Dilution draft {draft.id} references a missing layer")
+        if draft.last_run_id and draft.last_run_id not in dilution_runs:
+            issues.append(f"Dilution draft {draft.id} references a missing run")
     return issues
 
 
@@ -258,6 +295,8 @@ def relink_source(
     manifest.source_revision += 1
     manifest.portable_source = None
     if invalidate_results:
+        manifest.dilution_runs.clear()
+        manifest.dilution_drafts.clear()
         manifest.layers.clear()
         manifest.runs.clear()
         manifest.model_inference_runs.clear()

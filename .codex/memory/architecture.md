@@ -97,7 +97,8 @@ A `.gstproj` is a directory. `project.json` is the Pydantic `ProjectManifest`;
 is a reduced source preview; `results/` can hold exported analysis. Portable
 projects also copy the source to `source/`.
 
-`PROJECT_SCHEMA_VERSION` is 6. `load_project()` migrates older group data to
+`PROJECT_SCHEMA_VERSION` is 7. `load_project()` initializes optional dilution drafts
+and run snapshots for older projects and migrates older group data to
 layer-scoped `particle_groupings` and initializes optional ONNX/Cellpose inference
 collections, defaults older Cellpose recipes to 100% resolution, and leaves historical
 input dimensions unrecorded; `SegmentationRecipe` independently migrates a
@@ -121,3 +122,24 @@ selection. For ONNX and Cellpose, every run-owned result and domain layer must
 both appear in `run.layer_ids` and point back to that run with `source_run_id`;
 they start as `review_status="pending"` and are confirmed together. This
 bidirectional ownership is validated and exported as provenance.
+
+## Weld dilution
+
+`analysis/weld_dilution.py` owns orthogonal surface fitting, adaptive envelope
+segmentation, fractional pixel-cell area division, normal tie-line intersections,
+and immutable run mask snapshots. `WeldDilutionDraft` stores editable inputs and
+working layer IDs; `WeldDilutionRun` stores completed inputs, typed results,
+source revision, and pending/confirmed/outdated state. Each run owns exactly one
+`weld_envelope` and one `weld_domain` layer. Neither participates in particle
+fractions, grouping, nor the particle mask-edit commit path.
+
+The dedicated `gst_image_app/weld_dilution.py` controller owns the guided dock,
+virtual tie-line table, plots, patch-based mask undo, and cancellable workers.
+Epoch/source checks discard late results. Native generation also checks the source hash.
+MainWindow notifies it of calibration, ROI, source and project changes.
+Saved layers open as read-only
+historical snapshots; their masks and reference remain independent of draft edits.
+Run deletion removes paired layers and clears
+draft links; source relinking clears all dilution state. `dilution_export.py`
+provides shared tables, plots, overview rendering and exports. CLI `dilution`
+replays saved masks, or regenerates from recipe/domain/seeds with `--resegment`.

@@ -229,7 +229,7 @@ def test_cellpose_provenance_roundtrips_and_project_validation_checks_owned_laye
     project = save_project(tmp_path / "cellpose.gstproj", manifest)
     loaded, _ = load_project(project)
 
-    assert loaded.schema_version == 6
+    assert loaded.schema_version == 7
     assert loaded.cellpose_inference_runs[0].recipe.model_id == "cpsam_v2"
     assert validate_project(project, verify_hash=False) == [
         f"Source image is missing: {tmp_path / 'missing.png'}"
@@ -414,7 +414,7 @@ def test_reduced_cellpose_cli_roundtrip_export_and_legacy_migration(tmp_path, mo
     old_run["summary"]["analysis_resolution"] = "original"
     (root / "project.json").write_text(json.dumps(payload), encoding="utf-8")
     migrated, masks = load_project(root)
-    assert migrated.schema_version == 6
+    assert migrated.schema_version == 7
     assert migrated.cellpose_inference_recipes[0].resolution_percent == 100
     assert migrated.cellpose_inference_runs[0].recipe.resolution_percent == 100
     assert migrated.cellpose_inference_runs[0].input_dimensions_px == []

@@ -1,5 +1,23 @@
 # Large-image benchmarks
 
+## Weld dilution benchmark (2026-10-07)
+
+`python tests/benchmark_weld_dilution.py "test/img/1199_1_stitch.jpg"`
+processed the 25,574 × 6,154 panorama (157.38 MP) in **42.95 seconds**, with a
+**1.966 GiB** peak process working set. Image/domain preparation took 8.16 s,
+adaptive segmentation 13.83 s, and area/tie-line measurement 20.96 s. The run used
+the default dilution recipe (sigma 10 px, adaptive Gaussian window 201 px, C=2,
+closing radius 3 px, opening off, 2,048 px tiles) and 25,574 normal stations.
+
+This is a capacity check using the union of threshold candidates and a synthetic
+mid-image horizon, **not an operator-reviewed weld analysis or accuracy claim**.
+Its stations were all flagged (13,863 clipped; 11,711 multiple intersections), as
+expected for that deliberately unreviewed candidate union.
+
+Environment: Windows 11 build 26200, Python 3.14.7, Intel64 Family 6 Model 186
+Stepping 3; NumPy 2.5.2, OpenCV 4.14.0.94, SciPy 1.18.1, scikit-image 0.26.0,
+PySide6 6.11.2, Pydantic 2.13.5. The benchmark prints full dependency metadata.
+
 Run the manual benchmark from the repository root:
 
 ```powershell

@@ -235,6 +235,14 @@ a custom Cellpose checkpoint; use upstream Cellpose for that result or complete 
 validated ONNX-pack integration. See the [Cellpose-SAM usage, tuning, and training guide]
 (docs/cellpose.md) for the full fine-tuning workflow.
 
+## Weld dilution
+
+Use **Analysis → Weld Dilution** to fit the original coupon surface, segment and
+review a weld envelope with adaptive thresholding, and report cross-sectional
+dilution with calibrated perpendicular depth/height profiles. Optional weld-length
+input estimates volumes assuming a constant cross-section. See the
+[guided procedure and CLI replay documentation](docs/weld-dilution.md).
+
 ## Typical GUI workflow
 
 1. Open a micrograph or an existing `.gstproj` directory.
@@ -274,6 +282,9 @@ validated ONNX-pack integration. See the [Cellpose-SAM usage, tuning, and traini
    combined view, each individual graph as a PNG, and a reloadable Matplotlib Figure pickle.
    **Save grouping overlay image…** writes the active Analysis box at native resolution with its
    grouping colours.
+   Select a row in the **Particles** tab to highlight that particle in magenta with a white
+   outline in the image. The highlight follows mouse or keyboard selection without changing
+   the saved mask or group colours.
 7. For macro zones, follow the [assisted region-classification guide](docs/region-classification.md)
    to select one Analysis box, paint and erase example strokes for Weld, HAZ, Base, or custom
    classes, and train the classifier only within that box at the Selected ROI resolution.

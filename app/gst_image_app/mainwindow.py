@@ -8,7 +8,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from PySide6.QtCore import QPointF, Qt, QThreadPool, QTimer
+from PySide6.QtCore import QPointF, QSignalBlocker, Qt, QThreadPool, QTimer
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
@@ -109,6 +109,7 @@ from gst_image.project import (
 )
 from gst_image_app.canvas import ImageCanvas, distinct_label_colors
 from gst_image_app.particle_grouping import ParticleGroupingPanel
+from gst_image_app.weld_dilution import WeldDilutionController
 from gst_image_app.workers import FunctionWorker
 
 
@@ -680,6 +681,7 @@ class MainWindow(QMainWindow):
         self.grouping_preview_timer.setInterval(100)
         self.grouping_preview_timer.timeout.connect(self._apply_pending_grouping_preview)
         self.statusBar().showMessage("Open a micrograph or project to begin")
+        self.dilution = WeldDilutionController(self)
 
     def _build_actions(self) -> None:
         file_menu = self.menuBar().addMenu("&File")
@@ -1176,6 +1178,7 @@ class MainWindow(QMainWindow):
     def _build_results_dock(self) -> None:
         dock = QDockWidget("Results and layers", self)
         tabs = QTabWidget()
+        self.results_tabs = tabs
         self.summary = QLabel("No analysis yet")
         self.summary.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         self.summary.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -1186,6 +1189,12 @@ class MainWindow(QMainWindow):
             ["Label", "Size", "Circularity", "Area px²", "Solidity", "Border", "Group"]
         )
         self.particle_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.particle_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.particle_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.particle_table.setToolTip(
+            "Select a row to highlight that particle in magenta with a white outline."
+        )
+        self.particle_table.itemSelectionChanged.connect(self._highlight_selected_particle)
         particle_panel = QWidget()
         particle_layout = QVBoxLayout(particle_panel)
         particle_layout.addWidget(self.particle_table)
@@ -1309,6 +1318,12 @@ class MainWindow(QMainWindow):
     def _adjust_brush_radius(self, delta: int) -> None:
         if self.canvas.current_tool not in self.canvas.BRUSH_TOOLS:
             return
+        if hasattr(self, "dilution") and self.dilution.active:
+            if self.canvas.current_tool == "weld_blur_brush":
+                self.dilution.blur_radius.setValue(self.dilution.blur_radius.value() + delta)
+                return
+            self.dilution.radius.setValue(self.dilution.radius.value() + delta)
+            return
         previous = self.brush_radius.value()
         self.brush_radius.setValue(previous + delta)
         current = self.brush_radius.value()
@@ -1383,7 +1398,9 @@ class MainWindow(QMainWindow):
             (
                 item
                 for item in self.manifest.layers
-                if item.id == self.current_layer_id and item.kind != "domain"
+                if item.id == self.current_layer_id and item.kind not in {
+                    "domain", "weld_domain", "weld_envelope",
+                }
             ),
             None,
         )
@@ -1394,6 +1411,8 @@ class MainWindow(QMainWindow):
         return layer if self.current_mask is not None else None
 
     def _set_dirty(self, dirty: bool = True) -> None:
+        if hasattr(self, "dilution"):
+            self.dilution.observe()
         self.dirty = dirty
         suffix = " *" if dirty else ""
         self.setWindowTitle(f"GST Image — Weld Microstructure Analysis{suffix}")
@@ -1611,6 +1630,8 @@ class MainWindow(QMainWindow):
     ) -> None:
         if self.manifest is None:
             return
+        if hasattr(self, "dilution"):
+            self.dilution.preview_result = self.dilution.preview_image = None
         full_size = (self.manifest.image_width, self.manifest.image_height)
         self.canvas.set_image(image, full_size, source_rect)
         self.canvas.set_roi_outlines([self._roi_polygon(roi) for roi in self.manifest.rois])
@@ -2745,6 +2766,8 @@ class MainWindow(QMainWindow):
         self._set_dirty(True)
 
     def _polygon_finished(self, _tool: str, points: list[QPointF]) -> None:
+        if _tool.startswith("weld_"):
+            return
         roi = ROI(
             name=f"Polygon {len(self.manifest.rois) + 1}",
             kind=ROIKind.INCLUDE,
@@ -2758,6 +2781,9 @@ class MainWindow(QMainWindow):
 
     def _brush_stroke(self, tool: str, points: list[QPointF]) -> None:
         if self.manifest is None:
+            return
+        if self.dilution.active and tool in {"mask_brush", "mask_eraser"}:
+            self.dilution.edit_envelope(points, erase=tool == "mask_eraser")
             return
         if tool in {"seed", "seed_eraser"}:
             self._paint_training(points, erase=tool == "seed_eraser")
@@ -3008,6 +3034,8 @@ class MainWindow(QMainWindow):
         self._set_dirty(True)
 
     def _select_particle(self, point: QPointF) -> None:
+        if self.canvas.current_tool.startswith("weld_"):
+            return
         if self.canvas.current_tool == "eyedropper":
             self._pick_image_value(point)
             return
@@ -3093,6 +3121,10 @@ class MainWindow(QMainWindow):
     def _commit_mask_edits(self) -> None:
         if self.current_mask is None:
             return
+        layer = next((item for item in self.manifest.layers
+                      if item.id == self.current_layer_id), None)
+        if layer and layer.kind.startswith("weld_"):
+            return
         _, labels = cv2.connectedComponents(self.current_mask.astype(np.uint8), connectivity=8)
         self.current_labels = labels.astype(np.int32)
         self._labels_edited("paint_mask")
@@ -3154,6 +3186,24 @@ class MainWindow(QMainWindow):
             if requested_ids.intersection(run.layer_ids)
         }
         removed_ids = set(requested_ids)
+        dilution_run_ids = {
+            run.id for run in self.manifest.dilution_runs
+            if requested_ids.intersection(run.layer_ids)
+        }
+        for run in self.manifest.dilution_runs:
+            if run.id in dilution_run_ids:
+                removed_ids.update(run.layer_ids)
+        self.manifest.dilution_runs = [
+            run for run in self.manifest.dilution_runs if run.id not in dilution_run_ids
+        ]
+        for draft in self.manifest.dilution_drafts:
+            if {draft.envelope_layer_id, draft.domain_layer_id}.intersection(removed_ids):
+                removed_ids.update([draft.envelope_layer_id, draft.domain_layer_id])
+                draft.envelope_layer_id = draft.domain_layer_id = None
+                draft.segmentation_stale = True
+            if draft.last_run_id in dilution_run_ids:
+                draft.last_run_id = None
+        removed_ids.discard(None)
         for run in self.manifest.runs:
             if run.id in run_ids:
                 removed_ids.update(run.layer_ids)
@@ -3782,6 +3832,21 @@ class MainWindow(QMainWindow):
         return figure
 
     def show_selected_layer(self, item: QListWidgetItem) -> None:
+        layer_id = item.data(Qt.ItemDataRole.UserRole)
+        layer = next((entry for entry in self.manifest.layers if entry.id == layer_id), None)
+        if layer and layer.kind.startswith("weld_"):
+            run = next((r for r in self.manifest.dilution_runs if r.id == layer.source_run_id), None)
+            draft = next((d for d in self.manifest.dilution_drafts
+                          if (run and d.id == run.draft_id)
+                          or layer_id in {d.envelope_layer_id, d.domain_layer_id}), None)
+            self.dilution.show()
+            if draft:
+                self.dilution.analysis_choice.setCurrentIndex(
+                    self.dilution.analysis_choice.findData(draft.id)
+                )
+            if run:
+                self.dilution.show_history(run.id)
+            return
         self.grouping_preview_timer.stop()
         self._pending_grouping_preview = None
         layer_id = item.data(Qt.ItemDataRole.UserRole)
@@ -3840,6 +3905,11 @@ class MainWindow(QMainWindow):
         self._render_visible_layers()
 
     def _render_visible_layers(self) -> None:
+        if (hasattr(self, "dilution") and self.dilution.project is self.manifest
+                and self.dilution.active):
+            self.dilution.render()
+            return
+        self._highlight_selected_particle()
         if self.manifest is None:
             self.canvas.set_mask_overlay(None)
             return
@@ -3847,6 +3917,8 @@ class MainWindow(QMainWindow):
         overlays = []
         for layer in self.manifest.layers:
             if not layer.visible or layer.id not in self.layer_masks:
+                continue
+            if layer.kind.startswith("weld_"):
                 continue
             values = self.layer_masks[layer.id]
             if layer.kind == "multiclass":
@@ -4212,7 +4284,28 @@ class MainWindow(QMainWindow):
             f"Copied {table.rowCount()} particle row(s) to the clipboard.", 5000
         )
 
+    def _selected_particle_key(self) -> tuple[str, int] | None:
+        rows = self.particle_table.selectionModel().selectedRows()
+        if not rows:
+            return None
+        item = self.particle_table.item(rows[0].row(), 0)
+        return item.data(Qt.ItemDataRole.UserRole) if item else None
+
+    def _highlight_selected_particle(self) -> None:
+        key = self._selected_particle_key()
+        layer = next(
+            (item for item in self.manifest.layers if item.id == self.current_layer_id),
+            None,
+        ) if self.manifest else None
+        if key and layer and layer.kind == "instances" and key[0] == layer.id:
+            self.canvas.set_particle_highlight(self.current_labels, key[1])
+        else:
+            self.canvas.set_particle_highlight(None)
+
     def _refresh_particles(self) -> None:
+        selected_key = self._selected_particle_key()
+        blocker = QSignalBlocker(self.particle_table)
+        self.particle_table.clearSelection()
         records = (
             self.grouping_preview.particles
             if self.grouping_preview is not None
@@ -4264,9 +4357,18 @@ class MainWindow(QMainWindow):
                 ),
             ]
             for column, value in enumerate(values):
-                self.particle_table.setItem(row, column, QTableWidgetItem(value))
+                item = QTableWidgetItem(value)
+                if column == 0:
+                    item.setData(Qt.ItemDataRole.UserRole, (self.current_layer_id, particle.label))
+                self.particle_table.setItem(row, column, item)
+            if selected_key == (self.current_layer_id, particle.label):
+                self.particle_table.selectRow(row)
+        blocker.unblock()
+        self._highlight_selected_particle()
 
     def _refresh_grouping_panel(self) -> None:
+        self.grouping_preview_timer.stop()
+        self._pending_grouping_preview = None
         if not self.manifest:
             self.grouping_panel.set_context(
                 None, [], calibrated=False, groupings=[], active_id=None
@@ -4300,10 +4402,10 @@ class MainWindow(QMainWindow):
             groupings=groupings,
             active_id=active_id,
         )
-        active = self._active_particle_grouping(layer_id)
-        if active and self.particles:
-            self._preview_particle_grouping(active)
-        elif not layer_id:
+        grouping = self.grouping_panel.current_grouping()
+        if layer_id and self.particles and grouping:
+            self._preview_particle_grouping(grouping)
+        else:
             self.grouping_preview = None
             self.grouping_preview_definition = None
             self.grouping_panel.set_statistics({})
@@ -4334,6 +4436,7 @@ class MainWindow(QMainWindow):
             if answer != QMessageBox.StandardButton.Yes:
                 event.ignore()
                 return
+        self.dilution.cancel()
         event.accept()
 
 

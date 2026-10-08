@@ -42,7 +42,7 @@ def compute_project_fractions(
     class_names = {item.id: item.name for item in manifest.classes}
     entries: list[FractionEntry] = []
     for layer in manifest.layers:
-        if layer.kind == "domain" or layer.id not in masks:
+        if layer.kind in {"domain", "weld_domain", "weld_envelope"} or layer.id not in masks:
             continue
         domain_layer = next(
             (

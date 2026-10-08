@@ -117,6 +117,7 @@ class MetricRangeControl(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._domain = (0.0, 1.0)
+        self._values = (0.0, 1.0)
         self.slider = RangeSlider()
         self.lower = QDoubleSpinBox()
         self.upper = QDoubleSpinBox()
@@ -164,6 +165,9 @@ class MetricRangeControl(QWidget):
         minimum, maximum = self._domain
         lower = max(minimum, min(float(lower), maximum))
         upper = max(lower, min(float(upper), maximum))
+        # The numeric fields round for display; keep exact measurement boundaries
+        # so editing another field cannot exclude the smallest/largest particle.
+        self._values = (lower, upper)
         for spinbox, value in ((self.lower, lower), (self.upper, upper)):
             spinbox.blockSignals(True)
             spinbox.setValue(value)
@@ -173,7 +177,7 @@ class MetricRangeControl(QWidget):
         self.slider.blockSignals(False)
 
     def values(self) -> tuple[float, float]:
-        return self.lower.value(), self.upper.value()
+        return self._values
 
     def _to_slider(self, value: float) -> int:
         minimum, maximum = self._domain
@@ -181,17 +185,31 @@ class MetricRangeControl(QWidget):
 
     def _from_slider(self, value: int) -> float:
         minimum, maximum = self._domain
+        if value == 0:
+            return minimum
+        if value == 10_000:
+            return maximum
         return minimum + (maximum - minimum) * value / 10_000
 
     def _slider_changed(self, lower: int, upper: int) -> None:
-        self.set_values(self._from_slider(lower), self._from_slider(upper))
+        previous_lower, previous_upper = self.values()
+        self.set_values(
+            previous_lower if lower == self._to_slider(previous_lower) else self._from_slider(lower),
+            previous_upper if upper == self._to_slider(previous_upper) else self._from_slider(upper),
+        )
         self.rangeChanged.emit(*self.values())
 
     def _spin_changed(self) -> None:
         lower, upper = self.values()
-        if self.sender() is self.lower and lower > upper:
-            upper = lower
-        elif self.sender() is self.upper and upper < lower:
-            lower = upper
+        spinbox = self.sender()
+        value = spinbox.value()
+        if value == spinbox.minimum():
+            value = self._domain[0]
+        elif value == spinbox.maximum():
+            value = self._domain[1]
+        if spinbox is self.lower:
+            lower, upper = value, max(value, upper)
+        else:
+            lower, upper = min(lower, value), value
         self.set_values(lower, upper)
-        self.rangeChanged.emit(lower, upper)
+        self.rangeChanged.emit(*self.values())

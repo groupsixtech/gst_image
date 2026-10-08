@@ -15,6 +15,11 @@ from .masks import build_analysis_mask, rasterize_roi, suggest_specimen_mask
 from .model_inference import ModelPack, ModelPackManifest, run_model_inference
 from .particles import measure_particles, segment_particles
 from .regions import classify_regions
+from .weld_dilution import (
+    fit_surface_reference,
+    measure_weld_dilution,
+    segment_weld_envelope,
+)
 
 __all__ = [
     "ModelPack",
@@ -26,14 +31,17 @@ __all__ = [
     "compute_project_fractions",
     "create_measurement",
     "evaluate_particle_grouping",
+    "fit_surface_reference",
     "generate_particle_groups",
     "measure_particles",
+    "measure_weld_dilution",
     "particle_group_statistics",
     "particle_group_summary",
     "rasterize_roi",
     "run_cellpose_inference",
     "run_model_inference",
     "segment_particles",
+    "segment_weld_envelope",
     "suggest_specimen_mask",
     "validate_particle_groups",
 ]

@@ -427,9 +427,74 @@ def _cmd_infer_cellpose(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_dilution(args: argparse.Namespace) -> int:
+    from gst_image.analysis.weld_dilution import (
+        append_dilution_run,
+        envelope_from_seeds,
+        measure_weld_dilution,
+        segment_weld_envelope,
+    )
+    from gst_image.models import WeldDilutionDraft
+
+    issues = validate_project(args.project)
+    if issues:
+        raise ValueError("Cannot replay invalid project: " + "; ".join(issues))
+    original, masks = load_project(args.project)
+    run = next((r for r in original.dilution_runs if r.id == args.run_id), None)
+    if run is None:
+        raise ValueError(f"Dilution run not found: {args.run_id}")
+    output = Path(args.output)
+    if output.resolve().is_relative_to(project_path(args.project).resolve()):
+        raise ValueError("Output must be outside the input project directory")
+    target = output / "dilution.gstproj"
+    if output.exists() and any(output.iterdir()):
+        raise FileExistsError("Choose an empty output directory; input projects are never overwritten")
+    source = resolve_source(args.project, original).resolve()
+    domain = masks[run.domain_layer_id] > 0
+    envelope = masks[run.envelope_layer_id] > 0
+    if args.resegment:
+        result = segment_weld_envelope(
+            load_image(source, color=True), domain, run.recipe, progress=_progress,
+        )
+        envelope = envelope_from_seeds(result.candidates, run.component_seeds, domain)
+    manifest = ProjectManifest(
+        name=f"{original.name} dilution replay", source_path=str(source),
+        source_sha256=original.source_sha256, source_revision=original.source_revision,
+        image_width=original.image_width, image_height=original.image_height,
+        calibration=run.calibration, rois=original.rois, edits=original.edits,
+    )
+    draft = WeldDilutionDraft(
+        name=run.name, reference=run.reference, recipe=run.recipe, sampling=run.sampling,
+        scope_roi_ids=run.scope_roi_ids, scope="selected" if run.scope_roi_ids else "full",
+        component_seeds=run.component_seeds,
+        manually_edited=run.manually_edited and not args.resegment,
+    )
+    summary, lines = measure_weld_dilution(
+        envelope, domain, draft.reference, run.calibration, draft.sampling, progress=_progress,
+    )
+    result_masks = {}
+    replay = append_dilution_run(manifest, result_masks, draft, envelope, domain, summary, lines)
+    if not args.resegment and not run.outdated:
+        replay.review_status, replay.reviewed_at = run.review_status, run.reviewed_at
+        for layer in manifest.layers:
+            layer.review_status = replay.review_status
+    manifest.dilution_drafts.append(draft)
+    root = save_project(target, manifest, result_masks)
+    export_analysis(output, manifest, result_masks)
+    print(root)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="gst-image-cli")
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    dilution = subparsers.add_parser("dilution", help="Replay saved weld dilution inputs")
+    dilution.add_argument("project")
+    dilution.add_argument("--run-id", required=True)
+    dilution.add_argument("--output", required=True)
+    dilution.add_argument("--resegment", action="store_true")
+    dilution.set_defaults(handler=_cmd_dilution)
 
     analyze = subparsers.add_parser("analyze", help="Analyze one micrograph")
     analyze.add_argument("input")

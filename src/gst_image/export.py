@@ -13,6 +13,7 @@ import pandas as pd
 import tifffile
 
 from gst_image.analysis.groups import evaluate_particle_grouping, particle_group_statistics
+from gst_image.dilution_export import export_dilution
 from gst_image.models import (
     ROI,
     FractionResults,
@@ -575,4 +576,5 @@ def export_analysis(
     if source_image is not None and masks:
         overlay = create_overlay(source_image, manifest, masks)
         cv2.imwrite(str(destination / "overlay.png"), overlay)
+    export_dilution(destination, manifest, masks, source_image=source_image)
     return destination

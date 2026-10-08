@@ -968,6 +968,14 @@ def test_cellpose_gui_worker_and_result_preserve_reduced_provenance(qtbot, tmp_p
     assert run.review_status == "pending"
     assert all(layer.source_run_id == run.id for layer in window.manifest.layers)
     assert window.particles[0].area_mm2 == pytest.approx(21 * 17 * 0.1**2)
+    assert window.grouping_preview is not None
+    assert window.grouping_preview.unclassified_labels == set()
+    statistics = window.grouping_panel.statistics_table
+    assert statistics.item(0, 0).text() == "Included particles"
+    assert statistics.item(0, 1).text() == "1"
+    assert statistics.item(statistics.rowCount() - 1, 1).text() == "1"
+    # The automatic preview must not persist a scheme or alter review provenance.
+    assert window.manifest.particle_groupings == []
     window._set_dirty(False)
 
 

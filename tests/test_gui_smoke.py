@@ -2,6 +2,7 @@ import pickle
 
 import cv2
 import numpy as np
+import pytest
 from gst_image_app.canvas import distinct_label_colors
 from gst_image_app.mainwindow import MainWindow
 from gst_image_app.range_slider import MetricRangeControl
@@ -60,6 +61,57 @@ def test_dual_range_slider_and_exact_fields_stay_synchronized(qtbot):
     assert control.slider.values()[0] == 4000
 
 
+def test_range_control_preserves_precision_when_other_endpoint_changes(qtbot):
+    control = MetricRangeControl()
+    qtbot.addWidget(control)
+    bounds = (0.000123456789123, 0.000987654321987)
+    control.set_domain(*bounds)
+    control.set_values(*bounds)
+    assert control.values() == bounds
+    control.lower.setValue(0.0002)
+    assert control.values() == (0.0002, bounds[1])
+    control.lower.setValue(control.lower.minimum())
+    assert control.values() == bounds
+    control.slider.setValues(1000, 9000)
+    control.slider.setValues(0, 10000)
+    assert control.values() == bounds
+
+
+@pytest.mark.parametrize("metric_index", [0, 1, 2])
+def test_full_group_ranges_keep_calibrated_extreme_particles(qtbot, metric_index):
+    from gst_image_app.particle_grouping import ParticleGroupingPanel
+
+    from gst_image.analysis.groups import evaluate_particle_grouping
+    from gst_image.models import Calibration
+
+    labels = np.zeros((40, 60), np.int32)
+    labels[3:8, 3:8] = 1
+    labels[15:25, 30:40] = 2
+    particles = measure_particles(labels, Calibration(mm_per_pixel=0.00013))
+    panel = ParticleGroupingPanel()
+    qtbot.addWidget(panel)
+    panel.set_context("layer", particles, calibrated=True, groupings=[], active_id=None)
+    panel.size_bins.setValue(1)
+    panel.size_metric.setCurrentIndex(metric_index)
+    panel._generate_groups()
+    panel.groups_table.selectRow(0)
+    panel.group_size_range.slider.setValues(1000, 9000)
+    panel.group_size_range.slider.setValues(0, 10000)
+    # Changing circularity must not round the untouched size bounds either.
+    panel.group_circularity_range.slider.setValues(1000, 9000)
+    panel.group_circularity_range.slider.setValues(0, 10000)
+    panel.filter_box.setChecked(True)
+    panel.filter_size.setChecked(True)
+    panel.filter_size_range.slider.setValues(1000, 9000)
+    panel.filter_size_range.slider.setValues(0, 10000)
+
+    grouping = panel.current_grouping()
+    result = evaluate_particle_grouping(particles, grouping)
+    assert result.filtered_labels == set()
+    assert result.unclassified_labels == set()
+    assert set(result.assignments.values()) == {grouping.groups[0].id}
+
+
 def test_particle_grouping_panel_previews_filters_colors_and_saves(qtbot):
     window = MainWindow()
     qtbot.addWidget(window)
@@ -88,6 +140,8 @@ def test_particle_grouping_panel_previews_filters_colors_and_saves(qtbot):
 
     panel = window.grouping_panel
     assert panel.isEnabled()
+    assert window.grouping_preview is not None
+    assert panel.statistics_table.item(0, 1).text() == "2"
     panel.size_bins.setValue(2)
     panel.circularity_bins.setValue(1)
     panel._generate_groups()

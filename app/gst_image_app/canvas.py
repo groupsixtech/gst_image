@@ -83,10 +83,14 @@ class ImageCanvas(QGraphicsView):
     brush_radius_adjust_requested = Signal(int)
     scene_clicked = Signal(object)
     coordinates_changed = Signal(object)
+    viewport_changed = Signal()
 
-    LINE_TOOLS: ClassVar = {"calibrate", "measure", "split"}
+    LINE_TOOLS: ClassVar = {"calibrate", "measure", "split", "weld_line"}
     RECT_TOOLS: ClassVar = {"include", "exclude", "analysis_box"}
-    BRUSH_TOOLS: ClassVar = {"seed", "seed_eraser", "mask_brush", "mask_eraser"}
+    BRUSH_TOOLS: ClassVar = {
+        "seed", "seed_eraser", "mask_brush", "mask_eraser", "weld_brush", "weld_erase",
+        "weld_blur_brush",
+    }
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -102,7 +106,9 @@ class ImageCanvas(QGraphicsView):
         self._preview_size = (1, 1)
         self._display_rect = QRectF(0, 0, 1, 1)
         self._base_item: QGraphicsPixmapItem | None = None
+        self._original_pixmap: QPixmap | None = None
         self._overlay_item: QGraphicsPixmapItem | None = None
+        self._particle_highlight_item: QGraphicsPixmapItem | None = None
         self._annotation_item: QGraphicsPathItem | None = None
         self._roi_item: QGraphicsPathItem | None = None
         self._start: QPointF | None = None
@@ -113,6 +119,8 @@ class ImageCanvas(QGraphicsView):
         self._brush_cursor_item: QGraphicsEllipseItem | None = None
         self._middle_panning = False
         self._middle_pan_position = None
+        self.horizontalScrollBar().valueChanged.connect(lambda _: self.viewport_changed.emit())
+        self.verticalScrollBar().valueChanged.connect(lambda _: self.viewport_changed.emit())
 
     @property
     def source_size(self) -> tuple[int, int]:
@@ -167,6 +175,7 @@ class ImageCanvas(QGraphicsView):
             raise ValueError("Display source rectangle must have a positive size")
         self._display_rect = QRectF(left, top, right - left, bottom - top)
         pixmap = QPixmap.fromImage(_qimage_bgr(preview_bgr))
+        self._original_pixmap = pixmap
         self._base_item = self.scene().addPixmap(pixmap)
         self._base_item.setZValue(0)
         transform = QTransform.fromScale(
@@ -177,6 +186,7 @@ class ImageCanvas(QGraphicsView):
         self._base_item.setPos(left, top)
         self.scene().setSceneRect(self._display_rect)
         self._overlay_item = None
+        self._particle_highlight_item = None
         self._annotation_item = self.scene().addPath(QPainterPath(), QPen(QColor("white"), 2))
         self._annotation_item.setZValue(20)
         roi_pen = QPen(QColor("#00e5ff"), 2, Qt.PenStyle.DashLine)
@@ -188,6 +198,24 @@ class ImageCanvas(QGraphicsView):
         self._brush_cursor_item.setZValue(40)
         self._brush_cursor_item.setVisible(False)
         self.fitInView(self.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+
+    def set_base_preview(self, image: np.ndarray | None) -> None:
+        """Swap a full-panorama processing preview without losing source geometry or zoom."""
+        if self._base_item is None:
+            return
+        if image is None:
+            if self._original_pixmap is not None:
+                self._base_item.setPixmap(self._original_pixmap)
+            return
+        height, width = image.shape[:2]
+        rect = self._display_rect
+        sx, sy = width / self._source_size[0], height / self._source_size[1]
+        left = min(width-1, max(0, round(rect.left()*sx)))
+        top = min(height-1, max(0, round(rect.top()*sy)))
+        right = min(width, max(left+1, round(rect.right()*sx)))
+        bottom = min(height, max(top+1, round(rect.bottom()*sy)))
+        visible = cv2.resize(image[top:bottom, left:right], self._preview_size)
+        self._base_item.setPixmap(QPixmap.fromImage(_qimage_bgr(visible)))
 
     def _values_in_display_rect(self, values: np.ndarray) -> np.ndarray:
         """Crop full-source overlays when the canvas is displaying an ROI."""
@@ -375,6 +403,30 @@ class ImageCanvas(QGraphicsView):
         self._overlay_item = self.scene().addPixmap(QPixmap.fromImage(image))
         self._position_overlay(self._overlay_item)
 
+    def set_particle_highlight(self, labels: np.ndarray | None, label: int | None = None) -> None:
+        """Mark a table selection above result overlays without altering their colours."""
+        if self._particle_highlight_item is not None:
+            self.scene().removeItem(self._particle_highlight_item)
+            self._particle_highlight_item = None
+        if self._base_item is None or labels is None or label is None:
+            return
+        width, height = self._preview_size
+        visible = self._values_in_display_rect(labels)
+        small = cv2.resize(visible, (width, height), interpolation=cv2.INTER_NEAREST)
+        selected = (small == label).astype(np.uint8)
+        if not selected.any():
+            return
+        edge = selected - cv2.erode(selected, np.ones((3, 3), np.uint8))
+        rgba = np.zeros((height, width, 4), dtype=np.uint8)
+        rgba[selected > 0] = (255, 0, 255, 210)
+        rgba[edge > 0] = (255, 255, 255, 255)
+        image = QImage(
+            rgba.data, width, height, rgba.strides[0], QImage.Format.Format_RGBA8888
+        ).copy()
+        self._particle_highlight_item = self.scene().addPixmap(QPixmap.fromImage(image))
+        self._position_overlay(self._particle_highlight_item)
+        self._particle_highlight_item.setZValue(15)
+
     def set_annotations(self, lines: list[tuple[QPointF, QPointF, QColor]]) -> None:
         path = QPainterPath()
         for start, end, _ in lines:
@@ -398,6 +450,7 @@ class ImageCanvas(QGraphicsView):
     def wheelEvent(self, event) -> None:
         factor = 1.2 if event.angleDelta().y() > 0 else 1 / 1.2
         self.scale(factor, factor)
+        self.viewport_changed.emit()
 
     def mouseMoveEvent(self, event) -> None:
         if self._middle_panning and self._middle_pan_position is not None:
@@ -460,13 +513,15 @@ class ImageCanvas(QGraphicsView):
         if event.button() == Qt.MouseButton.LeftButton:
             if self._tool in self.LINE_TOOLS | self.RECT_TOOLS:
                 self._start = point
-            elif self._tool == "polygon":
+            elif self._tool in {"polygon", "weld_polygon_add", "weld_polygon_remove"}:
                 self._polygon.append(point)
                 self._draw_polygon()
             elif self._tool in self.BRUSH_TOOLS:
                 self._brush_points = [point]
                 self.brush_stroke.emit(self._tool, [point])
-            elif self._tool in {"select", "eyedropper"}:
+            elif self._tool in {
+                "select", "eyedropper", "weld_points", "weld_select", "weld_blur_detail",
+            }:
                 self.scene_clicked.emit(point)
         super().mousePressEvent(event)
 
@@ -498,11 +553,11 @@ class ImageCanvas(QGraphicsView):
         super().mouseReleaseEvent(event)
 
     def mouseDoubleClickEvent(self, event) -> None:
-        if self._tool == "polygon" and len(self._polygon) >= 3:
+        if self._tool in {"polygon", "weld_polygon_add", "weld_polygon_remove"} and len(self._polygon) >= 3:
             points = list(self._polygon)
             self._polygon.clear()
             self._clear_temporary()
-            self.polygon_finished.emit("include", points)
+            self.polygon_finished.emit("include" if self._tool == "polygon" else self._tool, points)
         super().mouseDoubleClickEvent(event)
 
     def _clear_temporary(self) -> None:

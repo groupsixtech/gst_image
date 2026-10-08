@@ -12,7 +12,7 @@ from typing import Any, Literal
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-PROJECT_SCHEMA_VERSION = 6
+PROJECT_SCHEMA_VERSION = 7
 
 
 def _id() -> str:
@@ -553,6 +553,157 @@ class TrainingStroke(BaseModel):
     erase: bool = False
 
 
+class SurfaceReference(BaseModel):
+    """Source pixel centres are integer coordinates; normal points into substrate."""
+
+    points: list[Point]
+    origin: Point
+    tangent: Point
+    normal: Point
+    flipped: bool = False
+    rms_residual_px: float = Field(default=0, ge=0)
+    span_px: float = Field(gt=0)
+
+    @model_validator(mode="after")
+    def validate_frame(self) -> SurfaceReference:
+        if len(self.points) < 2:
+            raise ValueError("At least two surface points are required")
+        for point in [*self.points, self.origin, self.tangent, self.normal]:
+            if not math.isfinite(point.x) or not math.isfinite(point.y):
+                raise ValueError("Surface coordinates must be finite")
+        t, n = self.tangent, self.normal
+        if not (math.isclose(math.hypot(t.x, t.y), 1, abs_tol=1e-7)
+                and math.isclose(math.hypot(n.x, n.y), 1, abs_tol=1e-7)
+                and abs(t.x * n.x + t.y * n.y) < 1e-7):
+            raise ValueError("Surface tangent and normal must be orthonormal")
+        return self
+
+
+class WeldBlurStroke(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False)
+
+    points: list[Point] = Field(min_length=1)
+    radius_px: float = Field(gt=0)
+    sigma_px: float = Field(gt=0)
+
+
+class WeldDilutionRecipe(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False)
+
+    channel: str = "gray"
+    polarity: ParticlePolarity = ParticlePolarity.DARK
+    threshold_method: Literal["adaptive_gaussian", "sauvola"] = "adaptive_gaussian"
+    gaussian_sigma_px: float = Field(default=10, ge=0)
+    blur_strokes: list[WeldBlurStroke] = Field(default_factory=list)
+    window_px: int = Field(default=201, ge=3)
+    adaptive_c: float = 2
+    sauvola_k: float = Field(default=0.2, ge=-1, le=1)
+    close_radius_px: int = Field(default=3, ge=0)
+    open_radius_px: int = Field(default=0, ge=0)
+    tile_size_px: int = Field(default=2048, ge=32)
+
+    @model_validator(mode="after")
+    def odd_window(self) -> WeldDilutionRecipe:
+        if self.window_px % 2 == 0:
+            self.window_px += 1
+        return self
+
+
+class WeldSampling(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False)
+
+    spacing: float = Field(default=1, gt=0)
+    spacing_unit: Literal["px", "mm", "µm"] = "px"
+    display_unit: Literal["px", "mm", "µm"] = "mm"
+    histogram_bins: int = Field(default=30, ge=1, le=500)
+    weld_length_mm: float | None = Field(default=None, gt=0)
+
+
+class WeldTieLine(BaseModel):
+    index: int
+    position_px: float
+    x: float
+    y: float
+    status: Literal["valid", "no_weld", "no_contact", "multiple", "clipped"]
+    depth_px: float | None = None
+    height_px: float | None = None
+    thickness_px: float | None = None
+    local_ratio_percent: float | None = None
+
+
+class WeldStatistics(BaseModel):
+    count: int = 0
+    mean: float | None = None
+    median: float | None = None
+    std: float | None = None
+    minimum: float | None = None
+    maximum: float | None = None
+    p5: float | None = None
+    p95: float | None = None
+
+
+class WeldDilutionSummary(BaseModel):
+    penetration_area_px2: float
+    reinforcement_area_px2: float
+    envelope_area_px2: float
+    dilution_percent: float
+    penetration_area_mm2: float | None = None
+    reinforcement_area_mm2: float | None = None
+    envelope_area_mm2: float | None = None
+    penetration_volume_mm3: float | None = None
+    reinforcement_volume_mm3: float | None = None
+    envelope_volume_mm3: float | None = None
+    volume_assumption: str | None = None
+    depth_px: WeldStatistics
+    height_px: WeldStatistics
+    depth_mm: WeldStatistics | None = None
+    height_mm: WeldStatistics | None = None
+    sample_counts: dict[str, int] = Field(default_factory=dict)
+    quality_flags: list[str] = Field(default_factory=list)
+
+
+class WeldDilutionDraft(BaseModel):
+    id: str = Field(default_factory=_id)
+    name: str = "Weld dilution"
+    reference: SurfaceReference | None = None
+    surface_points: list[Point] = Field(default_factory=list)
+    substrate_flipped: bool = False
+    recipe: WeldDilutionRecipe = Field(default_factory=WeldDilutionRecipe)
+    sampling: WeldSampling = Field(default_factory=WeldSampling)
+    scope_roi_ids: list[str] = Field(default_factory=list)
+    scope: Literal["full", "selected"] = "full"
+    component_seeds: list[Point] = Field(default_factory=list)
+    envelope_layer_id: str | None = None
+    domain_layer_id: str | None = None
+    last_run_id: str | None = None
+    segmentation_stale: bool = False
+    manually_edited: bool = False
+
+
+class WeldDilutionRun(BaseModel):
+    id: str = Field(default_factory=_id)
+    created_at: datetime = Field(default_factory=_now)
+    draft_id: str
+    name: str
+    reference: SurfaceReference
+    recipe: WeldDilutionRecipe
+    sampling: WeldSampling
+    calibration: Calibration | None = None
+    scope_roi_ids: list[str] = Field(default_factory=list)
+    component_seeds: list[Point] = Field(default_factory=list)
+    layer_ids: list[str] = Field(default_factory=list)
+    envelope_layer_id: str
+    domain_layer_id: str
+    source_sha256: str
+    source_revision: int
+    summary: WeldDilutionSummary
+    tie_lines: list[WeldTieLine]
+    manually_edited: bool = False
+    review_status: Literal["pending", "confirmed"] = "pending"
+    reviewed_at: datetime | None = None
+    outdated: bool = False
+
+
 class ProjectManifest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -584,6 +735,8 @@ class ProjectManifest(BaseModel):
     runs: list[AnalysisRun] = Field(default_factory=list)
     model_inference_runs: list[ModelInferenceRun] = Field(default_factory=list)
     cellpose_inference_runs: list[CellposeInferenceRun] = Field(default_factory=list)
+    dilution_drafts: list[WeldDilutionDraft] = Field(default_factory=list)
+    dilution_runs: list[WeldDilutionRun] = Field(default_factory=list)
     edits: list[EditEvent] = Field(default_factory=list)
     training_strokes: list[TrainingStroke] = Field(default_factory=list)
     particle_records: dict[str, list[ParticleRecord]] = Field(default_factory=dict)
